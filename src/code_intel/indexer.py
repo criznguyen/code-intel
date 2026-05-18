@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -16,6 +17,46 @@ from code_intel.config import Config
 from code_intel.embedder import EmbedResult, get_provider
 
 log = get_logger(__name__)
+
+
+def _parse_gitmodules(root: Path) -> list[str]:
+    """Return glob patterns for submodule paths declared in ``.gitmodules``.
+
+    v0.1.8 Gap-3: vendored multi-MB submodules were walked transparently and
+    embedded into the index, burning embed budget on third-party code the
+    user typically does not want searchable. We parse ``.gitmodules`` (the
+    canonical submodule manifest) and append ``<path>/**`` to runtime
+    exclude globs so submodules are silently skipped.
+
+    Returns ``[]`` when ``.gitmodules`` is missing or unparseable — we
+    err on the side of "index everything" rather than swallow user data
+    because of a malformed config file.
+    """
+    gm = root / ".gitmodules"
+    if not gm.exists():
+        return []
+    cp = configparser.ConfigParser()
+    try:
+        cp.read(gm, encoding="utf-8")
+    except (configparser.Error, OSError) as e:
+        log.warning(".gitmodules unparseable, skipping submodule exclude: %s", e)
+        return []
+    paths: list[str] = []
+    for sec in cp.sections():
+        # Section headers look like: [submodule "name"]
+        if not sec.startswith("submodule "):
+            continue
+        p = cp.get(sec, "path", fallback=None)
+        if not p:
+            continue
+        # Normalize: strip leading/trailing slash, drop empty.
+        p = p.strip().strip("/")
+        if not p:
+            continue
+        paths.append(f"{p}/**")
+    if paths:
+        log.info("auto-excluding %d submodule path(s) from .gitmodules", len(paths))
+    return paths
 
 
 def _spec(globs: list[str]) -> pathspec.PathSpec:
@@ -44,7 +85,9 @@ def _walk_repo(cfg: Config) -> Iterator[Path]:
     """
     root = cfg.target
     include_spec = _spec(cfg.index.include_globs)
-    exclude_spec = _spec(cfg.index.exclude_globs)
+    # v0.1.8 Gap-3: append submodule paths from .gitmodules so vendored
+    # third-party trees don't silently consume embed budget.
+    exclude_spec = _spec(cfg.index.exclude_globs + _parse_gitmodules(root))
     root_str = str(root)
     for dirpath, dirs, files in os.walk(root_str):
         dir_path = Path(dirpath)
@@ -114,7 +157,8 @@ def discover_files(cfg: Config, since: str | None = None) -> list[Path]:
     if since:
         candidates = _git_changed_files(cfg, since)
         include_spec = _spec(cfg.index.include_globs)
-        exclude_spec = _spec(cfg.index.exclude_globs)
+        # Same submodule-aware exclude treatment as _walk_repo.
+        exclude_spec = _spec(cfg.index.exclude_globs + _parse_gitmodules(cfg.target))
         keep: list[Path] = []
         for p in candidates:
             try:
@@ -197,6 +241,16 @@ def index_repo(
 
     Returns: {files, chunks, embedded, skipped, cache_hits}.
     """
+    # v0.1.8 Gap-5: Fail fast on read-only / disk-full target BEFORE we burn
+    # a full embed pass (can be ~30s+ on 2k chunks) only to crash on write.
+    # `_check_lancedb_writable` returns `CheckResult(level=PASS|WARN|FAIL,
+    # detail=...)`. We treat anything non-PASS as fatal.
+    from code_intel.doctor import _check_lancedb_writable
+
+    writable = _check_lancedb_writable(cfg)
+    if writable.level != "PASS":
+        raise RuntimeError(f"lancedb not writable: {writable.detail}")
+
     files = discover_files(cfg, since=since)
     log.info("discovered %d files", len(files))
 
@@ -276,61 +330,121 @@ def index_repo(
         }
 
     provider = get_provider(cfg)
-    texts = [c.content for c in chunks_to_embed]
-    result = provider.embed(texts)
-    log.info(
-        "embedded %d vectors via %s (skipped %d)",
-        len(result.vectors),
-        provider.name,
-        len(result.skipped_indices),
-    )
+    # v0.1.8 Gap-1: SIGINT batch-level checkpoint. Previously we called
+    # ``provider.embed(all_texts)`` once and only upserted after the whole
+    # corpus was embedded — a SIGINT mid-stream wasted *all* embed work.
+    # We now split into checkpoint batches and commit each batch's surviving
+    # rows immediately so a kill at batch N preserves batches 0..N-1.
+    #
+    # Sizing: pick ``max(provider.batch_size, 32)`` so each checkpoint
+    # contains exactly one provider-internal Ollama batch — no double
+    # batching, no smaller-than-Ollama-batch under-utilization.
+    provider_batch_size = max(1, getattr(provider, "batch_size", 32))
+    checkpoint_size = max(provider_batch_size, 32)
 
-    # Filter out skipped chunks before upsert; their indices map 1:1 with `texts`.
-    kept_chunks = [
-        c for i, c in enumerate(chunks_to_embed) if i not in result.skipped_indices
-    ]
-    if len(kept_chunks) != len(result.vectors):
-        # Defensive: provider contract bug. Refuse to corrupt the table.
-        raise RuntimeError(
-            f"embedder returned {len(result.vectors)} vectors but "
-            f"{len(kept_chunks)} chunks survived skip-filtering"
+    # Aggregated result so the final stats / skip log match the v0.1.7
+    # contract (single ``skipped.jsonl`` written at end, single stats dict).
+    agg_result = EmbedResult()
+    written = 0
+
+    # Pre-resolve store imports once (selective-delete branch needs the
+    # private helpers; the simple branch needs upsert_chunks). The selective
+    # branch is taken only on incremental re-index with cache hits.
+    use_selective = since and not force and cache_hits > 0
+    if use_selective:
+        from code_intel.store import (
+            _open_or_create_table,
+            _records,
+            _sanitize_lance_error,
+            _sql_quote,
+            open_db,
         )
+    else:
+        from code_intel.store import upsert_chunks
 
-    _write_skipped_log(cfg, result, chunks_to_embed)
+    total_to_embed = len(chunks_to_embed)
+    n_ckpt = (total_to_embed + checkpoint_size - 1) // checkpoint_size
+    for ckpt_start in range(0, total_to_embed, checkpoint_size):
+        batch_chunks = chunks_to_embed[ckpt_start : ckpt_start + checkpoint_size]
+        batch_texts = [c.content for c in batch_chunks]
+        batch_result = provider.embed(batch_texts)
 
-    # When we used the content-hash cache we MUST NOT delete-before-add the
-    # affected paths (upsert_chunks does that per-path) — that would wipe out
-    # the cached survivors. Instead, do a path-narrow delete only for paths
-    # that have at least one miss, then add only the embedded misses.
-    if since and not force and cache_hits > 0:
-        from code_intel.store import _open_or_create_table, _records, _sql_quote, open_db
+        # Map this batch's skipped indices back to global indices so the
+        # final skipped.jsonl is correct.
+        for local_idx in batch_result.skipped_indices:
+            global_idx = ckpt_start + local_idx
+            agg_result.skipped_indices.append(global_idx)
+            agg_result.skipped_reasons[global_idx] = batch_result.skipped_reasons.get(
+                local_idx, "unknown"
+            )
+        agg_result.vectors.extend(batch_result.vectors)
 
-        if kept_chunks:
-            rows = _records(kept_chunks, result.vectors)
+        kept_batch = [
+            c for i, c in enumerate(batch_chunks) if i not in batch_result.skipped_indices
+        ]
+        if len(kept_batch) != len(batch_result.vectors):
+            raise RuntimeError(
+                f"embedder returned {len(batch_result.vectors)} vectors but "
+                f"{len(kept_batch)} chunks survived skip-filtering"
+            )
+
+        if not kept_batch:
+            log.info(
+                "checkpoint %d/%d: %d/%d embedded+committed (batch all skipped)",
+                ckpt_start // checkpoint_size + 1,
+                n_ckpt,
+                written,
+                total_to_embed,
+            )
+            continue
+
+        if use_selective:
+            rows = _records(kept_batch, batch_result.vectors)
             db = open_db(cfg)
             tbl = _open_or_create_table(db, cfg, sample_rows=rows)
-            # Per-(path, symbol, start_line) selective delete so cache-hit
-            # rows for the same file survive.
             ids_to_replace = {r["id"] for r in rows}
             if ids_to_replace:
                 id_list = ",".join(_sql_quote(i) for i in ids_to_replace)
                 try:
                     tbl.delete(f"id IN ({id_list})")
                 except Exception as e:  # pragma: no cover
-                    log.debug("selective delete before incremental add failed: %s", e)
-            tbl.add(rows)
-            written = len(rows)
+                    log.debug(
+                        "selective delete before incremental add failed: %s", e
+                    )
+            try:
+                tbl.add(rows)
+            except OSError as e:
+                # Same sanitization as upsert_chunks; the selective branch
+                # bypasses that wrapper so we duplicate the guard here.
+                raise RuntimeError(
+                    f"failed to upsert chunks: {_sanitize_lance_error(str(e))}"
+                ) from e
+            written += len(rows)
         else:
-            written = 0
-    else:
-        from code_intel.store import upsert_chunks
+            written += upsert_chunks(cfg, kept_batch, batch_result.vectors)
 
-        written = upsert_chunks(cfg, kept_chunks, result.vectors)
+        log.info(
+            "checkpoint %d/%d: %d/%d embedded+committed",
+            ckpt_start // checkpoint_size + 1,
+            n_ckpt,
+            written,
+            total_to_embed,
+        )
+
+    log.info(
+        "embedded %d vectors via %s (skipped %d)",
+        len(agg_result.vectors),
+        provider.name,
+        len(agg_result.skipped_indices),
+    )
+
+    _write_skipped_log(cfg, agg_result, chunks_to_embed)
+
     return {
         "files": len(files),
         "chunks": len(all_chunks),
         "embedded": written,
-        "skipped": len(result.skipped_indices),
+        "skipped": len(agg_result.skipped_indices),
         "cache_hits": cache_hits,
         "chunker_skipped_files": chunker_skipped_files,
     }
