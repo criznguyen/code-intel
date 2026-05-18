@@ -321,15 +321,23 @@ def mcp_config(
 @app.command()
 def doctor(
     target: Path = typer.Option(None, "--target"),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Treat WARN as FAIL (exit 1). Use in CI to catch missing optional deps.",
+    ),
 ) -> None:
     """Health-check binaries, models, and config."""
     target_path = _resolve_target(target)
-    from code_intel.doctor import format_results, has_failures, run_doctor
+    from code_intel.doctor import format_results, has_failures, has_warnings, run_doctor
 
     results = run_doctor(target_path)
     console.print(f"[bold]code-intel doctor[/]  ({target_path})")
     console.print(format_results(results))
     if has_failures(results):
+        raise typer.Exit(code=1)
+    if strict and has_warnings(results):
+        console.print("[yellow]--strict: WARN treated as FAIL[/]")
         raise typer.Exit(code=1)
 
 
