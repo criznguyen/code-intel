@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,16 @@ from code_intel.chunker import Chunk
 from code_intel.config import Config
 
 log = get_logger(__name__)
+
+
+def _sql_quote(s: str) -> str:
+    """SQL-quote a string literal by doubling embedded apostrophes.
+
+    Prevents path values like ``it's.rs`` from breaking LanceDB SQL filters
+    (and from being silently treated as duplicate rows because the parse
+    error swallowed the per-path delete-before-add step).
+    """
+    return "'" + s.replace("'", "''") + "'"
 
 
 def chunk_id(chunk: Chunk) -> str:
@@ -44,13 +55,35 @@ def _records(chunks: list[Chunk], vectors: list[list[float]]) -> list[dict[str, 
     return rows
 
 
+_DB_CACHE: dict[tuple[str, str], Any] = {}
+_DB_CACHE_LOCK = threading.Lock()
+
+
 def open_db(cfg: Config):
-    """Lazy import lancedb; open DB at configured path."""
+    """Lazy import lancedb; open DB at configured path.
+
+    Connections are cached per (resolved_path, table_name). LanceDB's
+    connection object is process-local and re-opening it on every query
+    burns ~10ms + ~1MB allocation per call (LOW-9 in v0.1.3 audit).
+    """
     import lancedb  # type: ignore
 
     db_path = cfg.lancedb_path
     db_path.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(str(db_path))
+    key = (str(db_path.resolve()), cfg.lancedb.table)
+    with _DB_CACHE_LOCK:
+        cached = _DB_CACHE.get(key)
+        if cached is not None:
+            return cached
+        conn = lancedb.connect(str(db_path))
+        _DB_CACHE[key] = conn
+        return conn
+
+
+def _reset_db_cache() -> None:
+    """Test-only: drop cached connections so per-tmp_path tests stay isolated."""
+    with _DB_CACHE_LOCK:
+        _DB_CACHE.clear()
 
 
 def _open_or_create_table(db, cfg: Config, sample_rows: list[dict[str, Any]] | None = None):
@@ -89,7 +122,7 @@ def upsert_chunks(cfg: Config, chunks: list[Chunk], vectors: list[list[float]]) 
     # Delete existing rows for the affected paths first (per-file replace semantics).
     paths = {c.path for c in chunks}
     if paths:
-        path_list = ",".join(f"'{p}'" for p in paths)
+        path_list = ",".join(_sql_quote(p) for p in paths)
         try:
             tbl.delete(f"path IN ({path_list})")
         except Exception as e:  # pragma: no cover
@@ -105,7 +138,7 @@ def delete_for_path(cfg: Config, path: str) -> int:
         return 0
     tbl = db.open_table(name)
     try:
-        tbl.delete(f"path = '{path}'")
+        tbl.delete(f"path = {_sql_quote(path)}")
     except Exception as e:  # pragma: no cover
         log.debug("delete_for_path %s: %s", path, e)
         return 0
@@ -127,9 +160,10 @@ def search(
     q = tbl.search(vector).limit(k)
     filters: list[str] = []
     if lang:
-        filters.append(f"lang = '{lang}'")
+        filters.append(f"lang = {_sql_quote(lang)}")
     if path_prefix:
-        filters.append(f"path LIKE '{path_prefix}%'")
+        # Escape apostrophes then append the LIKE wildcard outside the literal.
+        filters.append(f"path LIKE {_sql_quote(path_prefix + '%')}")
     if filters:
         q = q.where(" AND ".join(filters))
     df = q.to_list()

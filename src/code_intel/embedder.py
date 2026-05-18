@@ -51,7 +51,10 @@ class OllamaProvider:
         self.model = cfg.model
         self.batch_size = cfg.batch_size
         self.dim = cfg.dim
-        self._client = httpx.Client(timeout=60.0)
+        self._client = httpx.Client(timeout=cfg.timeout_seconds)
+        # Sticky bit: set after the first /api/embed 404 so subsequent batches
+        # skip the round-trip. Per-instance so tests stay isolated.
+        self._batch_endpoint_disabled: bool = False
 
     def _embed_one(self, text: str) -> list[float]:
         # Ollama exposes both /api/embeddings (legacy) and /api/embed (newer).
@@ -62,44 +65,109 @@ class OllamaProvider:
         body = resp.json()
         if "embedding" not in body:
             raise RuntimeError(f"Ollama response missing 'embedding': {body}")
-        return list(body["embedding"])
+        vec = list(body["embedding"])
+        # Ollama returns HTTP 200 with `embedding: []` on whitespace-only prompts.
+        # Refuse zero-length / dim-mismatch vectors so LanceDB doesn't corrupt
+        # the table or NEAREST search downstream (HIGH-1 in v0.1.3 audit).
+        if len(vec) != self.dim:
+            raise RuntimeError(
+                f"Ollama returned vector of length {len(vec)}, expected {self.dim} "
+                f"(prompt chars={len(text)}, likely empty/whitespace input)"
+            )
+        return vec
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """POST to /api/embed (Ollama >= 0.2) with `input: [str]`.
+
+        Raises ``NotImplementedError`` on 404 so the caller can fall back to
+        the per-item /api/embeddings legacy endpoint.
+        """
+        if self._batch_endpoint_disabled:
+            raise NotImplementedError("legacy ollama, /api/embed not available")
+        url = f"{self.endpoint}/api/embed"
+        resp = self._client.post(url, json={"model": self.model, "input": texts})
+        if resp.status_code == 404:
+            self._batch_endpoint_disabled = True
+            raise NotImplementedError("ollama returned 404 for /api/embed")
+        resp.raise_for_status()
+        body = resp.json()
+        embs = body.get("embeddings")
+        if not isinstance(embs, list) or len(embs) != len(texts):
+            raise RuntimeError(
+                f"Ollama /api/embed returned malformed batch: "
+                f"got {type(embs).__name__} len={len(embs) if isinstance(embs, list) else '?'} "
+                f"for {len(texts)} inputs"
+            )
+        out: list[list[float]] = []
+        for i, v in enumerate(embs):
+            if not isinstance(v, list) or len(v) != self.dim:
+                raise RuntimeError(
+                    f"Ollama /api/embed item {i}: vector dim={len(v) if isinstance(v, list) else '?'}, "
+                    f"expected {self.dim} (input chars={len(texts[i])})"
+                )
+            out.append(list(v))
+        return out
 
     def embed(self, texts: list[str]) -> EmbedResult:
         result = EmbedResult()
-        for idx, t in enumerate(texts):
+        batch_size = max(1, self.batch_size)
+        # We chunk inputs into batches and try the batch endpoint first. On
+        # batch-level failure we fall back to per-item _embed_one so a single
+        # bad chunk in a batch doesn't take down the surrounding survivors.
+        for batch_start in range(0, len(texts), batch_size):
+            batch = texts[batch_start : batch_start + batch_size]
             try:
-                result.vectors.append(self._embed_one(t))
-            except httpx.HTTPStatusError as e:
-                reason = f"http_{e.response.status_code}: {e.response.text[:200]!r}"
-                log.warning(
-                    "ollama embed skip idx=%d chars=%d status=%s reason=%s",
-                    idx,
-                    len(t),
-                    e.response.status_code,
-                    reason,
-                )
-                result.skipped_indices.append(idx)
-                result.skipped_reasons[idx] = reason
-            except httpx.RequestError as e:
-                reason = f"transport: {e!r}"
-                log.warning(
-                    "ollama embed skip idx=%d chars=%d transport-error=%s",
-                    idx,
-                    len(t),
+                vecs = self._embed_batch(batch)
+                for i, v in enumerate(vecs):
+                    idx = batch_start + i
+                    result.vectors.append(v)
+                continue
+            except NotImplementedError:
+                # /api/embed not available; permanent fallback (sticky bit set).
+                pass
+            except (httpx.HTTPStatusError, httpx.RequestError, RuntimeError) as e:
+                log.debug(
+                    "ollama batch embed fell back to per-item (batch_start=%d size=%d): %s",
+                    batch_start,
+                    len(batch),
                     e,
                 )
-                result.skipped_indices.append(idx)
-                result.skipped_reasons[idx] = reason
-            except RuntimeError as e:
-                reason = f"protocol: {e}"
-                log.warning(
-                    "ollama embed skip idx=%d chars=%d protocol-error=%s",
-                    idx,
-                    len(t),
-                    e,
-                )
-                result.skipped_indices.append(idx)
-                result.skipped_reasons[idx] = reason
+            # Per-item fallback (legacy /api/embeddings, also used for batch failure).
+            for i, t in enumerate(batch):
+                idx = batch_start + i
+                try:
+                    result.vectors.append(self._embed_one(t))
+                except httpx.HTTPStatusError as e:
+                    reason = f"http_{e.response.status_code}: {e.response.text[:200]!r}"
+                    log.warning(
+                        "ollama embed skip idx=%d chars=%d status=%s reason=%s",
+                        idx,
+                        len(t),
+                        e.response.status_code,
+                        reason,
+                    )
+                    result.skipped_indices.append(idx)
+                    result.skipped_reasons[idx] = reason
+                except httpx.RequestError as e:
+                    reason = f"transport: {e!r}"
+                    log.warning(
+                        "ollama embed skip idx=%d chars=%d transport-error=%s",
+                        idx,
+                        len(t),
+                        e,
+                    )
+                    result.skipped_indices.append(idx)
+                    result.skipped_reasons[idx] = reason
+                except RuntimeError as e:
+                    reason = f"protocol: {e}"
+                    log.warning(
+                        "ollama embed skip idx=%d chars=%d protocol-error=%s",
+                        idx,
+                        len(t),
+                        e,
+                    )
+                    result.skipped_indices.append(idx)
+                    result.skipped_reasons[idx] = reason
         return result
 
 

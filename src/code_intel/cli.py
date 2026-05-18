@@ -107,6 +107,11 @@ def index(
     since: str = typer.Option(
         None, "--since", help="Reindex files changed since a git ref (e.g. HEAD~5)."
     ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Remove DB rows for files that no longer match include_globs / exist on disk.",
+    ),
 ) -> None:
     """Run the chunk + embed pipeline."""
     target_path = _resolve_target(target)
@@ -117,17 +122,21 @@ def index(
         raise typer.Exit(code=2)
 
     try:
-        from code_intel.indexer import index_repo
+        from code_intel.indexer import index_repo, prune_orphans
 
+        pruned = 0
+        if prune:
+            pruned = prune_orphans(cfg)
         stats = index_repo(cfg, since=since if since else None)
     except Exception as e:
         err_console.print(f"[red]index failed:[/] {e}")
         raise typer.Exit(code=1) from e
     skipped = stats.get("skipped", 0)
     suffix = f" skipped={skipped} (see warnings above)" if skipped else ""
+    prune_suffix = f" pruned={pruned}" if prune else ""
     console.print(
         f"[green]indexed[/] files={stats['files']} chunks={stats['chunks']} "
-        f"embedded={stats['embedded']}{suffix}"
+        f"embedded={stats['embedded']}{suffix}{prune_suffix}"
     )
 
 

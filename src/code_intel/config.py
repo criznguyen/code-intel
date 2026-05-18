@@ -63,6 +63,10 @@ class EmbeddingSection(BaseModel):
     endpoint: str = "http://localhost:11434"
     batch_size: int = 32
     dim: int = 768
+    # HTTP timeout in seconds for any single Ollama request. Larger CodeLlama-
+    # style models on slow CPUs can take > 60s to embed; let operators tune
+    # this without forking. (LOW-7 in v0.1.3 audit.)
+    timeout_seconds: float = 60.0
 
 
 class LanceDBSection(BaseModel):

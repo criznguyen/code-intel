@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -27,21 +28,46 @@ def _matches_any(rel_path: str, spec: pathspec.PathSpec) -> bool:
 
 
 def _walk_repo(cfg: Config) -> Iterator[Path]:
+    """Yield repo files honoring include/exclude globs with early dir pruning.
+
+    v0.1.3 used ``rglob('*')`` which descends into every directory regardless
+    of exclude patterns — recursing through ``target/`` or ``node_modules/``
+    burns ~5-10 sec on large repos. We use ``os.walk`` with in-place
+    ``dirs[:]`` pruning so excluded directories are never opened.
+    (INFO-11 part A in v0.1.3 audit.)
+    """
     root = cfg.target
     include_spec = _spec(cfg.index.include_globs)
     exclude_spec = _spec(cfg.index.exclude_globs)
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            rel = str(p.relative_to(root))
-        except ValueError:
-            continue
-        if exclude_spec.match_file(rel):
-            continue
-        if not include_spec.match_file(rel):
-            continue
-        yield p
+    root_str = str(root)
+    for dirpath, dirs, files in os.walk(root_str):
+        dir_path = Path(dirpath)
+        # Prune sub-dirs in place. gitwildmatch semantics need a trailing slash
+        # plus relative-to-root form to anchor `**/target/**` correctly.
+        kept_dirs: list[str] = []
+        for d in dirs:
+            child = dir_path / d
+            try:
+                rel = str(child.relative_to(root))
+            except ValueError:
+                kept_dirs.append(d)
+                continue
+            # Match dir path with trailing slash so `**/target/**` hits.
+            if exclude_spec.match_file(rel + "/"):
+                continue
+            kept_dirs.append(d)
+        dirs[:] = kept_dirs
+        for fname in files:
+            p = dir_path / fname
+            try:
+                rel = str(p.relative_to(root))
+            except ValueError:
+                continue
+            if exclude_spec.match_file(rel):
+                continue
+            if not include_spec.match_file(rel):
+                continue
+            yield p
 
 
 def _git_changed_files(cfg: Config, since: str) -> list[Path]:
@@ -127,6 +153,25 @@ def _write_skipped_log(cfg: Config, result: EmbedResult, chunks: list[Chunk]) ->
                 + "\n"
             )
     return log_path
+
+
+def prune_orphans(cfg: Config) -> int:
+    """Remove DB rows for paths that no longer match include/exclude globs
+    (i.e. file deleted, renamed out, or globs tightened).
+
+    Returns the number of rows removed. (MED-6 in v0.1.3 audit.)
+    """
+    from code_intel.store import delete_for_path, list_indexed_paths
+
+    on_disk = {str(p.relative_to(cfg.target)) for p in _walk_repo(cfg)}
+    indexed = list_indexed_paths(cfg)
+    orphans = indexed - on_disk
+    removed = 0
+    for rel in orphans:
+        removed += delete_for_path(cfg, rel)
+    if orphans:
+        log.info("pruned %d orphan path(s) from index", len(orphans))
+    return removed
 
 
 def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:

@@ -23,8 +23,13 @@ def _spec(globs: list[str]) -> pathspec.PathSpec:
 
 
 async def watch(target: Path) -> None:
-    """Async loop: on file change, re-chunk+re-embed only changed files."""
-    from watchfiles import awatch
+    """Async loop: on file change, re-chunk+re-embed only changed files.
+
+    Deletes are tracked separately and routed through
+    :func:`code_intel.store.delete_for_path` so orphan chunks don't linger
+    after a rename or rm. (MED-6 in v0.1.3 audit.)
+    """
+    from watchfiles import Change, awatch
 
     cfg: Config = load_config(target)
     root = cfg.target
@@ -34,10 +39,9 @@ async def watch(target: Path) -> None:
 
     async for changes in awatch(str(root), debounce=int(DEBOUNCE_SECONDS * 1000)):
         paths: set[Path] = set()
-        for _ctype, raw_path in changes:
+        deleted_rels: set[str] = set()
+        for ctype, raw_path in changes:
             p = Path(raw_path)
-            if not p.exists() or not p.is_file():
-                continue
             try:
                 rel = str(p.relative_to(root))
             except ValueError:
@@ -46,7 +50,21 @@ async def watch(target: Path) -> None:
                 continue
             if not include_spec.match_file(rel):
                 continue
+            if ctype == Change.deleted:
+                deleted_rels.add(rel)
+                continue
+            if not p.exists() or not p.is_file():
+                # add/modify event but file already gone (race) — treat as delete.
+                deleted_rels.add(rel)
+                continue
             paths.add(p)
+        if deleted_rels:
+            log.info("pruning %d deleted file(s) from index", len(deleted_rels))
+            from code_intel.store import delete_for_path
+
+            loop = asyncio.get_running_loop()
+            for rel in deleted_rels:
+                await loop.run_in_executor(None, delete_for_path, cfg, rel)
         if not paths:
             continue
         log.info("re-indexing %d changed file(s)", len(paths))

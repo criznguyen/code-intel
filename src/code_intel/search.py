@@ -64,6 +64,11 @@ def semantic_search(
     lang: str | None = None,
 ) -> list[dict[str, Any]]:
     """Embed query and search LanceDB."""
+    if not query or not query.strip():
+        # Empty / whitespace-only queries explode in Ollama (zero-length
+        # embedding vector → LanceDB IndexError downstream). Fail fast with
+        # a typed error the caller can render. (HIGH-1 in v0.1.3 audit.)
+        raise ValueError("query must be non-empty")
     provider = get_provider(cfg)
     result = provider.embed([query])
     if not result.vectors:

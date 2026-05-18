@@ -10,10 +10,22 @@ from code_intel.config import default_config
 from code_intel.embedder import EmbedResult, OllamaProvider, get_provider
 
 
+def _legacy_only(provider: OllamaProvider) -> None:
+    """Force per-item /api/embeddings path so tests don't have to mock /api/embed.
+
+    The provider tries /api/embed first since v0.1.4 (LOW-8 fix). Tests that
+    pin the per-item legacy contract flip the sticky bit by hand.
+    """
+    provider._batch_endpoint_disabled = True
+
+
 @respx.mock
 def test_ollama_provider_embeds() -> None:
     cfg = default_config(project_name="t")
+    # dim=3 to match the mocked vector shape (HIGH-1 guard enforces dim match).
+    cfg.embedding.dim = 3
     provider = OllamaProvider(cfg.embedding)
+    _legacy_only(provider)
     route = respx.post("http://localhost:11434/api/embeddings").mock(
         return_value=httpx.Response(200, json={"embedding": [0.1, 0.2, 0.3]})
     )
@@ -28,7 +40,9 @@ def test_ollama_provider_embeds() -> None:
 def test_ollama_provider_skips_5xx_on_single_chunk() -> None:
     """500 on chunk 3 of 5: survivors embed, skipped count surfaces, no abort."""
     cfg = default_config(project_name="t")
+    cfg.embedding.dim = 2
     provider = OllamaProvider(cfg.embedding)
+    _legacy_only(provider)
     ok = httpx.Response(200, json={"embedding": [0.42, 0.42]})
     bad = httpx.Response(500, json={"error": "model too long"})
     # respx returns side_effect responses in order across calls.
@@ -45,7 +59,9 @@ def test_ollama_provider_skips_5xx_on_single_chunk() -> None:
 @respx.mock
 def test_ollama_provider_skips_transport_error() -> None:
     cfg = default_config(project_name="t")
+    cfg.embedding.dim = 1
     provider = OllamaProvider(cfg.embedding)
+    _legacy_only(provider)
     ok = httpx.Response(200, json={"embedding": [1.0]})
     respx.post("http://localhost:11434/api/embeddings").mock(
         side_effect=[ok, httpx.ConnectError("boom"), ok]

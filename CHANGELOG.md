@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.1.4] - 2026-05-18
+
+Closes all 11 findings from the v0.1.3 audit.
+
+### Fixed (HIGH)
+
+- **embedder** (HIGH-1): `OllamaProvider._embed_one` now refuses zero-length / dim-mismatch vectors so an empty Ollama response on whitespace prompts no longer corrupts LanceDB. `search.semantic_search` rejects empty/whitespace queries with `ValueError("query must be non-empty")` instead of letting them propagate.
+- **chunker** (HIGH-2): `_whole_file_chunk` fallback now routes through `_split_oversized` when the head section exceeds `max_chunk_chars`. Previously emitted a single 200-line chunk that was silently truncated downstream.
+
+### Fixed (MEDIUM)
+
+- **chunker** (MED-3): Rust `pub mod foo;` / `mod foo;` forward declarations are filtered before chunk emission so 1-line decl junk no longer pollutes top-K. Inline `mod foo { ... }` bodies (with braces) are still chunked.
+- **chunker** (MED-4): Markdown chunker now state-tracks fenced code blocks (` ``` ` and `~~~`). Shell-comment lines like `# Setup` inside fenced code blocks are no longer mis-promoted to H1 sections.
+- **store** (MED-5): All LanceDB SQL string filters route through `_sql_quote()` which doubles embedded apostrophes. Re-indexing a file like `src/it's.rs` is now a clean upsert instead of a duplicate-row append + silent parse error.
+- **watcher / cli** (MED-6): `watcher.watch` now distinguishes `Change.deleted` events from add/modify and routes each to `store.delete_for_path` so orphan chunks are removed on file delete/rename. `code-intel index --prune` flag added — discovers current files, compares against indexed paths, deletes the diff.
+
+### Fixed (LOW)
+
+- **embedder** (LOW-7): hardcoded 60s HTTP timeout is now `[embedding].timeout_seconds` (default 60.0). Slow CPUs / large embed models can raise this without forking.
+- **embedder** (LOW-8): `cfg.embedding.batch_size` is now honored — `OllamaProvider.embed` tries `/api/embed` with `input: [str]` per batch and falls back permanently (sticky bit per-instance) to per-item `/api/embeddings` on 404. Old Ollama (< 0.2) keeps working; new Ollama gets 1 POST per batch instead of N.
+- **store** (LOW-9): `open_db` caches the LanceDB connection per `(resolved_path, table)` behind a `threading.Lock`. Search hot path no longer pays ~10 ms + allocation pressure per call. Test helper `_reset_db_cache()` exposed for tmp-path test isolation.
+
+### Fixed (INFO)
+
+- **indexer** (INFO-11 part A): `_walk_repo` now uses `os.walk` with in-place `dirs[:]` pruning honoring `exclude_globs`, so `target/`, `node_modules/`, etc. are no longer descended into. Saves ~5-10 s on large repos.
+- **bench** (INFO-10): added `scripts/bench_memory.py` to measure RSS delta over N searches. Reference point: v0.1.3 leaked ~650 MB across 50 queries due to per-call DB connection; LOW-9 cache materially closes that gap.
+
+### Deferred
+
+- **INFO-11 part B** (content-hash dedup for `--since`): documented as `docs/adr/0001-content-hash-dedup.md`, scheduled for v0.1.5. `--since HEAD` is still O(changed-files × embed-cost) in v0.1.4.
+
+### Added
+
+- `[embedding].timeout_seconds` config field.
+- `code-intel index --prune` flag.
+- `scripts/bench_memory.py`.
+- 18 new regression tests in `tests/test_v0_1_4_fixes.py` — one per finding plus contract pins for `_sql_quote`, `_RUST_MOD_DECL_RE`, `_whole_file_chunk` return shape.
+
 ## [0.1.3] - 2026-05-18
 
 ### Fixed

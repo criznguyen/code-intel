@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 from functools import cache
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from pydantic import BaseModel
 from code_intel._logging import get_logger
 
 log = get_logger(__name__)
+
+# Matches Rust forward `mod foo;` declarations (no body). Inline `mod x { … }`
+# always contains `{`, so this regex excludes them.
+_RUST_MOD_DECL_RE = re.compile(r"^\s*(pub(\s*\([^)]*\))?\s+)?mod\s+\w+\s*;\s*$")
+
 
 # Default maximum chunk size in characters. Conservative value chosen to fit
 # the 2048-token context window of common Ollama embedding models
@@ -134,19 +140,44 @@ def _safe_decode(raw: bytes) -> str:
         return raw.decode("utf-8", errors="replace")
 
 
-def _whole_file_chunk(rel_path: str, lang: str, text: str) -> Chunk:
+def _whole_file_chunk(
+    rel_path: str,
+    lang: str,
+    text: str,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+) -> list[Chunk]:
+    """Fallback chunk for files with no parseable symbols.
+
+    Returns a list (not a single chunk) so callers can splice. If the head
+    section exceeds ``max_chunk_chars`` it is split at line boundaries via
+    :func:`_split_oversized` rather than emitted whole and silently truncated
+    by downstream embed-cap logic. (HIGH-2 in v0.1.3 audit.)
+    """
     lines = text.splitlines()
     head = "\n".join(lines[:WHOLE_FILE_FALLBACK_LINES])
-    return Chunk(
-        path=rel_path,
-        lang=lang,
-        symbol=Path(rel_path).name,
-        kind="module",
-        start_line=1,
-        end_line=min(len(lines), WHOLE_FILE_FALLBACK_LINES),
-        content=head,
-        content_hash=_hash_content(head),
-    )
+    symbol = Path(rel_path).name
+    if len(head) > max_chunk_chars:
+        return _split_oversized(
+            rel_path=rel_path,
+            lang=lang,
+            symbol=symbol,
+            kind="module",
+            start_line=1,
+            content=head,
+            max_chunk_chars=max_chunk_chars,
+        )
+    return [
+        Chunk(
+            path=rel_path,
+            lang=lang,
+            symbol=symbol,
+            kind="module",
+            start_line=1,
+            end_line=min(len(lines), WHOLE_FILE_FALLBACK_LINES),
+            content=head,
+            content_hash=_hash_content(head),
+        )
+    ]
 
 
 def _split_oversized(
@@ -229,17 +260,33 @@ def _split_oversized(
     return sub_chunks
 
 
+_MARKDOWN_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
 def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chunk]:
-    """Split markdown by H1/H2 headings, then split oversized sections."""
+    """Split markdown by H1/H2 headings, then split oversized sections.
+
+    Lines inside fenced code blocks (``` or ~~~) are *not* treated as headings
+    even if they start with `#`. Shell scripts in markdown commonly contain
+    `# Setup` comments which v0.1.3 mistakenly promoted to H1 sections.
+    (MED-4 in v0.1.3 audit.)
+    """
     lines = text.splitlines()
     sections: list[tuple[str, int, list[str]]] = []
     current_title = Path(rel_path).stem
     current_start = 1
     current_lines: list[str] = []
+    in_fence = False
 
     for i, line in enumerate(lines, start=1):
         stripped = line.lstrip()
-        if stripped.startswith(("# ", "## ")):
+        if _MARKDOWN_FENCE_RE.match(line):
+            # Toggle fence state. Opening fence may have a language tag,
+            # closing fence usually does not — but we just toggle either way.
+            in_fence = not in_fence
+            current_lines.append(line)
+            continue
+        if not in_fence and stripped.startswith(("# ", "## ")):
             if current_lines:
                 sections.append((current_title, current_start, current_lines))
             current_title = stripped.lstrip("#").strip() or f"section-{i}"
@@ -280,7 +327,7 @@ def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chun
             )
         )
     if not chunks:
-        chunks.append(_whole_file_chunk(rel_path, "markdown", text))
+        chunks.extend(_whole_file_chunk(rel_path, "markdown", text, max_chunk_chars))
     return chunks
 
 
@@ -334,27 +381,37 @@ def _chunk_with_treesitter(
 ) -> list[Chunk]:
     rules = LANG_NODE_RULES.get(lang)
     if rules is None:
-        return [_whole_file_chunk(rel_path, lang, text)]
+        return _whole_file_chunk(rel_path, lang, text, max_chunk_chars)
 
     parser = _get_parser(lang)
     if parser is None:
-        return [_whole_file_chunk(rel_path, lang, text)]
+        return _whole_file_chunk(rel_path, lang, text, max_chunk_chars)
 
     source = text.encode("utf-8")
     try:
         tree = parser.parse(source)
     except Exception as e:  # pragma: no cover
         log.debug("parse failed %s: %s", rel_path, e)
-        return [_whole_file_chunk(rel_path, lang, text)]
+        return _whole_file_chunk(rel_path, lang, text, max_chunk_chars)
 
     matches = _walk_tree(tree.root_node, source, rules)
     if not matches:
-        return [_whole_file_chunk(rel_path, lang, text)]
+        return _whole_file_chunk(rel_path, lang, text, max_chunk_chars)
 
     chunks: list[Chunk] = []
     for symbol, kind, node in matches:
         content = _safe_decode(source[node.start_byte : node.end_byte])
         if not content.strip():
+            continue
+        # Rust: drop `pub mod foo;` / `mod foo;` forward declarations — they
+        # produce 1-line chunks that flood top-K with junk and never contain
+        # semantically useful content. Inline `mod foo { ... }` bodies are
+        # kept (they have braces). (MED-3 in v0.1.3 audit.)
+        if (
+            lang == "rust"
+            and node.type == "mod_item"
+            and _RUST_MOD_DECL_RE.match(content.strip())
+        ):
             continue
         if len(content) > max_chunk_chars:
             # Split oversized code unit at line boundaries rather than dropping.
@@ -383,7 +440,7 @@ def _chunk_with_treesitter(
             )
         )
     if not chunks:
-        return [_whole_file_chunk(rel_path, lang, text)]
+        return _whole_file_chunk(rel_path, lang, text, max_chunk_chars)
     return chunks
 
 
