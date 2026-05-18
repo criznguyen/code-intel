@@ -132,6 +132,25 @@ def _open_or_create_table(db, cfg: Config, sample_rows: list[dict[str, Any]] | N
     return tbl
 
 
+def _sanitize_lance_error(msg: str) -> str:
+    """Strip Rust crate path leaks from LanceDB OSError / IOError messages.
+
+    Lance bubbles up rust crate-internal paths
+    (``/root/.cargo/registry/.../lance-io-4.0.0/src/object_store.rs:676:21``)
+    that leak the build environment of the wheel. Replace with a stable,
+    actionable hint so users see "permission/space" instead of a Rust
+    backtrace fragment they cannot act on.
+    """
+    if (
+        "/root/.cargo/registry" in msg
+        or ".cargo/registry" in msg
+        or "src/object_store.rs" in msg
+        or "lance-io" in msg
+    ):
+        return "lance write failed (permission/space)"
+    return msg
+
+
 def upsert_chunks(cfg: Config, chunks: list[Chunk], vectors: list[list[float]]) -> int:
     """Upsert chunks (delete-then-add by path-set for v0.1 simplicity)."""
     if not chunks:
@@ -147,7 +166,16 @@ def upsert_chunks(cfg: Config, chunks: list[Chunk], vectors: list[list[float]]) 
             tbl.delete(f"path IN ({path_list})")
         except Exception as e:  # pragma: no cover
             log.debug("delete-before-upsert failed (likely empty table): %s", e)
-    tbl.add(rows)
+    try:
+        tbl.add(rows)
+    except OSError as e:
+        # v0.1.8 Gap-5: Sanitize Rust crate-path leak in lance OSError so
+        # operators see "permission/space" not a Rust internal backtrace
+        # fragment. Wrap as RuntimeError so callers don't have to know about
+        # the (Lance-internal) error class.
+        raise RuntimeError(
+            f"failed to upsert chunks: {_sanitize_lance_error(str(e))}"
+        ) from e
     return len(rows)
 
 
