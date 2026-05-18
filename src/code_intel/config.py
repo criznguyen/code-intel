@@ -47,6 +47,11 @@ class IndexSection(BaseModel):
         ]
     )
     max_file_bytes: int = 1_000_000
+    # Maximum chunk size in characters. Default 2500 fits 2048-token Ollama
+    # embedding models (embeddinggemma / nomic-embed-text / mxbai-embed-large)
+    # comfortably for dense code (≈ 4-5 chars/token). Larger chunks are split
+    # at line boundaries by the chunker rather than dropped.
+    max_chunk_chars: int = 2500
 
 
 class EmbeddingSection(BaseModel):

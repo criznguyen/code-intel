@@ -4,9 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
+# {{ code_intel_bin }} is the absolute path of the code-intel CLI at install
+# time. Avoids systemd user-session PATH issues (no shims, no `code-intel`).
 # The instance name (%i) maps to a manifest at
 # ~/.config/code-intel/projects/%i.toml which carries the target path.
-ExecStart=/bin/sh -c 'TARGET=$(awk -F\\\" "/^target/ {print \\$2}" %h/.config/code-intel/projects/%i.toml); exec code-intel serve --target "$TARGET" --stdio'
+ExecStart=/bin/sh -c 'TARGET=$(awk -F\\\" "/^target/ {print \\$2}" %h/.config/code-intel/projects/%i.toml); exec {{ code_intel_bin }} serve --target "$TARGET" --stdio'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

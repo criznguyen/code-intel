@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -41,6 +42,19 @@ def _read_template(name: str) -> str:
     return (_templates_dir() / name).read_text(encoding="utf-8")
 
 
+def _resolve_code_intel_bin() -> str:
+    """Best-effort absolute path to the `code-intel` CLI.
+
+    Tries shutil.which first (honors $PATH at install time), falls back to
+    sys.executable + `-m code_intel` for the rare case the script wrapper
+    can't be located.
+    """
+    found = shutil.which("code-intel")
+    if found:
+        return found
+    return f"{sys.executable} -m code_intel"
+
+
 def write_project_manifest(instance: str, target: Path) -> Path:
     """Persist `instance -> target_path` so systemd units can resolve `%i`."""
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -51,26 +65,41 @@ def write_project_manifest(instance: str, target: Path) -> Path:
     return manifest
 
 
-def install_units() -> list[Path]:
-    """Copy unit templates into ~/.config/systemd/user/. Returns written paths."""
+def install_units(force: bool = False) -> list[Path]:
+    """Copy unit templates into ~/.config/systemd/user/. Returns written paths.
+
+    When `force=False` (default), existing unit files are left untouched and a
+    warning is logged. `force=True` overwrites — used by `install-services
+    --force` to recover from stale templates (e.g. v0.1.0/v0.1.1 bare-python
+    drift).
+    """
     USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    python_bin = sys.executable
+    code_intel_bin = _resolve_code_intel_bin()
     written: list[Path] = []
     for name in UNIT_NAMES:
         src = f"systemd/{name}"
-        content = _read_template(src).replace("{{ python_bin }}", sys.executable)
+        content = (
+            _read_template(src)
+            .replace("{{ python_bin }}", python_bin)
+            .replace("{{ code_intel_bin }}", code_intel_bin)
+        )
         dst = USER_UNIT_DIR / name
+        if dst.exists() and not force:
+            log.warning("unit exists, skipping (use --force to overwrite): %s", dst)
+            continue
         dst.write_text(content, encoding="utf-8")
         written.append(dst)
     return written
 
 
-def install_for_instance(instance: str, target: Path) -> dict[str, str]:
+def install_for_instance(instance: str, target: Path, force: bool = False) -> dict[str, str]:
     """Install units + manifest for a given (instance, target). Returns summary."""
-    units = install_units()
+    units = install_units(force=force)
     manifest = write_project_manifest(instance, target)
     return {
         "manifest": str(manifest),
-        "units": ", ".join(str(p) for p in units),
+        "units": ", ".join(str(p) for p in units) if units else "(no units written)",
         "next": (
             f"systemctl --user daemon-reload && "
             f"systemctl --user enable --now code-intel-mcp@{instance}"

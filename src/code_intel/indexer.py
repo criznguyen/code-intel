@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -11,7 +12,7 @@ import pathspec
 from code_intel._logging import get_logger
 from code_intel.chunker import Chunk, chunk_file
 from code_intel.config import Config
-from code_intel.embedder import get_provider
+from code_intel.embedder import EmbedResult, get_provider
 
 log = get_logger(__name__)
 
@@ -97,30 +98,85 @@ def discover_files(cfg: Config, since: str | None = None) -> list[Path]:
     return list(_walk_repo(cfg))
 
 
+def _write_skipped_log(cfg: Config, result: EmbedResult, chunks: list[Chunk]) -> Path | None:
+    """Persist per-chunk skip metadata to `.codeindex/skipped.jsonl`.
+
+    Returns the path written, or None when no skips occurred.
+    """
+    if not result.skipped_indices:
+        return None
+    log_path = cfg.codeindex_dir / "skipped.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as f:
+        for idx in result.skipped_indices:
+            c = chunks[idx]
+            reason = result.skipped_reasons.get(idx, "unknown")
+            f.write(
+                json.dumps(
+                    {
+                        "path": c.path,
+                        "symbol": c.symbol,
+                        "lang": c.lang,
+                        "start_line": c.start_line,
+                        "end_line": c.end_line,
+                        "chars": len(c.content),
+                        "reason": reason,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    return log_path
+
+
 def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:
     """Run the full chunk-and-embed pipeline.
 
-    Returns a stats dict: {files, chunks, embedded}.
+    Returns a stats dict: {files, chunks, embedded, skipped}.
     """
     files = discover_files(cfg, since=since)
     log.info("discovered %d files", len(files))
 
     all_chunks: list[Chunk] = []
+    max_chunk_chars = cfg.index.max_chunk_chars
     for fp in files:
-        chunks = chunk_file(fp, cfg.target, cfg.index.max_file_bytes)
+        chunks = chunk_file(
+            fp, cfg.target, cfg.index.max_file_bytes, max_chunk_chars=max_chunk_chars
+        )
         if chunks:
             all_chunks.extend(chunks)
     log.info("produced %d chunks", len(all_chunks))
 
     if not all_chunks:
-        return {"files": len(files), "chunks": 0, "embedded": 0}
+        return {"files": len(files), "chunks": 0, "embedded": 0, "skipped": 0}
 
     provider = get_provider(cfg)
     texts = [c.content for c in all_chunks]
-    vectors = provider.embed(texts)
-    log.info("embedded %d vectors via %s", len(vectors), provider.name)
+    result = provider.embed(texts)
+    log.info(
+        "embedded %d vectors via %s (skipped %d)",
+        len(result.vectors),
+        provider.name,
+        len(result.skipped_indices),
+    )
+
+    # Filter out skipped chunks before upsert; their indices map 1:1 with `texts`.
+    kept_chunks = [c for i, c in enumerate(all_chunks) if i not in result.skipped_indices]
+    if len(kept_chunks) != len(result.vectors):
+        # Defensive: provider contract bug. Refuse to corrupt the table.
+        raise RuntimeError(
+            f"embedder returned {len(result.vectors)} vectors but "
+            f"{len(kept_chunks)} chunks survived skip-filtering"
+        )
+
+    _write_skipped_log(cfg, result, all_chunks)
 
     from code_intel.store import upsert_chunks
 
-    written = upsert_chunks(cfg, all_chunks, vectors)
-    return {"files": len(files), "chunks": len(all_chunks), "embedded": written}
+    written = upsert_chunks(cfg, kept_chunks, result.vectors)
+    return {
+        "files": len(files),
+        "chunks": len(all_chunks),
+        "embedded": written,
+        "skipped": len(result.skipped_indices),
+    }

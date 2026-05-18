@@ -13,8 +13,16 @@ from code_intel._logging import get_logger
 
 log = get_logger(__name__)
 
-# Maximum chunk size in characters. Skip larger (likely generated code).
-MAX_CHUNK_CHARS = 8000
+# Default maximum chunk size in characters. Conservative value chosen to fit
+# the 2048-token context window of common Ollama embedding models
+# (embeddinggemma, nomic-embed-text, mxbai-embed-large) for dense code at
+# ~4-5 chars per token. Override via `[index].max_chunk_chars` in config.toml.
+#
+# Historical note: v0.1.0/v0.1.1 hardcoded 8000, which silently dropped any
+# chunk above the cap AND produced HTTP 500 from Ollama on chunks that did
+# slip through. v0.1.2 lowers default to 2500 and splits at line boundaries
+# instead of dropping.
+DEFAULT_MAX_CHUNK_CHARS = 2500
 # For files with no parseable symbols, take this many leading lines as a single chunk.
 WHOLE_FILE_FALLBACK_LINES = 200
 
@@ -141,8 +149,88 @@ def _whole_file_chunk(rel_path: str, lang: str, text: str) -> Chunk:
     )
 
 
-def _chunk_markdown(rel_path: str, text: str) -> list[Chunk]:
-    """Split markdown by H1/H2 headings."""
+def _split_oversized(
+    rel_path: str,
+    lang: str,
+    symbol: str,
+    kind: str,
+    start_line: int,
+    content: str,
+    max_chunk_chars: int,
+) -> list[Chunk]:
+    """Split an oversized chunk into ≤ max_chunk_chars sub-chunks at line boundaries.
+
+    Each sub-chunk gets a suffix `:partN` on the symbol so callers can tell them
+    apart. start_line is computed for each sub-chunk relative to the parent.
+    """
+    if max_chunk_chars <= 0:
+        return []
+    lines = content.splitlines(keepends=True)
+    sub_chunks: list[Chunk] = []
+    part = 0
+    buf: list[str] = []
+    buf_len = 0
+    line_offset = 0  # offset of buf[0] from start_line
+    cur_line_offset = 0
+
+    def _flush(local_offset: int) -> None:
+        nonlocal part, buf, buf_len
+        if not buf:
+            return
+        part += 1
+        body = "".join(buf).rstrip("\n")
+        sub_start = start_line + local_offset
+        sub_end = sub_start + len(buf) - 1
+        sub_chunks.append(
+            Chunk(
+                path=rel_path,
+                lang=lang,
+                symbol=f"{symbol}:part{part}",
+                kind=kind,
+                start_line=sub_start,
+                end_line=sub_end,
+                content=body,
+                content_hash=_hash_content(body),
+            )
+        )
+        buf = []
+        buf_len = 0
+
+    for line in lines:
+        # Single line itself longer than the cap: hard-truncate that one line.
+        if len(line) > max_chunk_chars:
+            _flush(line_offset)
+            part += 1
+            trunc = line[:max_chunk_chars].rstrip("\n")
+            trunc_body = trunc + f"\n# [code-intel: line truncated, original {len(line)} chars]"
+            sub_start = start_line + cur_line_offset
+            sub_chunks.append(
+                Chunk(
+                    path=rel_path,
+                    lang=lang,
+                    symbol=f"{symbol}:part{part}",
+                    kind=kind,
+                    start_line=sub_start,
+                    end_line=sub_start,
+                    content=trunc_body,
+                    content_hash=_hash_content(trunc_body),
+                )
+            )
+            cur_line_offset += 1
+            line_offset = cur_line_offset
+            continue
+        if buf_len + len(line) > max_chunk_chars and buf:
+            _flush(line_offset)
+            line_offset = cur_line_offset
+        buf.append(line)
+        buf_len += len(line)
+        cur_line_offset += 1
+    _flush(line_offset)
+    return sub_chunks
+
+
+def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chunk]:
+    """Split markdown by H1/H2 headings, then split oversized sections."""
     lines = text.splitlines()
     sections: list[tuple[str, int, list[str]]] = []
     current_title = Path(rel_path).stem
@@ -165,7 +253,19 @@ def _chunk_markdown(rel_path: str, text: str) -> list[Chunk]:
     chunks: list[Chunk] = []
     for title, start, body in sections:
         content = "\n".join(body)
-        if len(content) > MAX_CHUNK_CHARS:
+        if len(content) > max_chunk_chars:
+            # Split oversized markdown section at line boundaries.
+            chunks.extend(
+                _split_oversized(
+                    rel_path=rel_path,
+                    lang="markdown",
+                    symbol=title,
+                    kind="section",
+                    start_line=start,
+                    content=content,
+                    max_chunk_chars=max_chunk_chars,
+                )
+            )
             continue
         chunks.append(
             Chunk(
@@ -229,7 +329,9 @@ def _walk_tree(root, source: bytes, rules: dict) -> list[tuple[str, str, object]
     return found
 
 
-def _chunk_with_treesitter(rel_path: str, lang: str, text: str) -> list[Chunk]:
+def _chunk_with_treesitter(
+    rel_path: str, lang: str, text: str, max_chunk_chars: int
+) -> list[Chunk]:
     rules = LANG_NODE_RULES.get(lang)
     if rules is None:
         return [_whole_file_chunk(rel_path, lang, text)]
@@ -254,7 +356,19 @@ def _chunk_with_treesitter(rel_path: str, lang: str, text: str) -> list[Chunk]:
         content = _safe_decode(source[node.start_byte : node.end_byte])
         if not content.strip():
             continue
-        if len(content) > MAX_CHUNK_CHARS:
+        if len(content) > max_chunk_chars:
+            # Split oversized code unit at line boundaries rather than dropping.
+            chunks.extend(
+                _split_oversized(
+                    rel_path=rel_path,
+                    lang=lang,
+                    symbol=symbol,
+                    kind=kind,
+                    start_line=node.start_point[0] + 1,
+                    content=content,
+                    max_chunk_chars=max_chunk_chars,
+                )
+            )
             continue
         chunks.append(
             Chunk(
@@ -273,14 +387,29 @@ def _chunk_with_treesitter(rel_path: str, lang: str, text: str) -> list[Chunk]:
     return chunks
 
 
-def chunk_text(rel_path: str, lang: str, text: str) -> list[Chunk]:
-    """Chunk a single text blob. Public entry for tests and direct use."""
+def chunk_text(
+    rel_path: str,
+    lang: str,
+    text: str,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+) -> list[Chunk]:
+    """Chunk a single text blob. Public entry for tests and direct use.
+
+    `max_chunk_chars` caps each emitted chunk; oversized syntactic units are
+    split at line boundaries (not dropped). Default sized for 2048-token
+    Ollama embedding models.
+    """
     if lang == "markdown":
-        return _chunk_markdown(rel_path, text)
-    return _chunk_with_treesitter(rel_path, lang, text)
+        return _chunk_markdown(rel_path, text, max_chunk_chars)
+    return _chunk_with_treesitter(rel_path, lang, text, max_chunk_chars)
 
 
-def chunk_file(file_path: Path, repo_root: Path, max_bytes: int) -> list[Chunk]:
+def chunk_file(
+    file_path: Path,
+    repo_root: Path,
+    max_bytes: int,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+) -> list[Chunk]:
     """Chunk a single on-disk file. Returns [] on skip/error."""
     try:
         size = file_path.stat().st_size
@@ -305,4 +434,4 @@ def chunk_file(file_path: Path, repo_root: Path, max_bytes: int) -> list[Chunk]:
         rel = str(file_path.resolve().relative_to(repo_root.resolve()))
     except ValueError:
         rel = str(file_path)
-    return chunk_text(rel, lang, text)
+    return chunk_text(rel, lang, text, max_chunk_chars=max_chunk_chars)

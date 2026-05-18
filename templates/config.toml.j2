@@ -16,6 +16,10 @@ exclude_globs = [
     "**/dist/**", "**/build/**", "**/.git/**",
 ]
 max_file_bytes = 1000000
+# Maximum characters per emitted chunk. 2500 fits 2048-token Ollama
+# embedding models (embeddinggemma / nomic-embed-text / mxbai-embed-large).
+# Larger syntactic units are split at line boundaries, not dropped.
+max_chunk_chars = 2500
 
 [embedding]
 provider = "ollama"

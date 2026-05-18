@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from code_intel.chunker import chunk_text
+from code_intel.chunker import DEFAULT_MAX_CHUNK_CHARS, chunk_text
 
 PYTHON_SAMPLE = '''
 def add(a: int, b: int) -> int:
@@ -85,3 +85,60 @@ def test_chunk_markdown_sections() -> None:
     for c in chunks:
         assert c.kind == "section"
         assert c.lang == "markdown"
+
+
+# ---------------------------------------------------------------------------
+# v0.1.2: max_chunk_chars contract — never exceed cap, split (not drop).
+# ---------------------------------------------------------------------------
+
+
+def test_chunks_never_exceed_default_cap() -> None:
+    """No emitted chunk may exceed DEFAULT_MAX_CHUNK_CHARS."""
+    _try_or_skip("python")
+    # Synthesize a giant function body well above 2500 chars.
+    body_lines = "\n".join(f"    x_{i} = {i}" for i in range(400))
+    giant = f"def huge():\n{body_lines}\n    return 0\n"
+    chunks = chunk_text("huge.py", "python", giant)
+    assert chunks, "should not drop the whole file"
+    for c in chunks:
+        assert len(c.content) <= DEFAULT_MAX_CHUNK_CHARS, (
+            f"chunk {c.symbol} exceeded cap: {len(c.content)} > {DEFAULT_MAX_CHUNK_CHARS}"
+        )
+
+
+def test_chunks_respect_custom_cap() -> None:
+    """Passing a smaller cap produces strictly smaller chunks."""
+    _try_or_skip("python")
+    body_lines = "\n".join(f"    x_{i} = {i}" for i in range(400))
+    giant = f"def huge():\n{body_lines}\n    return 0\n"
+
+    big = chunk_text("huge.py", "python", giant, max_chunk_chars=DEFAULT_MAX_CHUNK_CHARS)
+    small = chunk_text("huge.py", "python", giant, max_chunk_chars=1000)
+
+    for c in small:
+        assert len(c.content) <= 1000
+
+    # Smaller cap must produce at least as many chunks (usually more).
+    assert len(small) >= len(big)
+    # And at least one chunk must exist (no silent drop).
+    assert small
+
+
+def test_oversized_chunk_split_preserves_lines() -> None:
+    """Split sub-chunks should be tagged with `:partN` so callers can dedupe."""
+    _try_or_skip("python")
+    body_lines = "\n".join(f"    x_{i} = {i}" for i in range(400))
+    giant = f"def huge():\n{body_lines}\n    return 0\n"
+    chunks = chunk_text("huge.py", "python", giant, max_chunk_chars=500)
+    part_chunks = [c for c in chunks if ":part" in c.symbol]
+    assert part_chunks, "expected split sub-chunks tagged with :partN"
+
+
+def test_markdown_oversized_section_splits() -> None:
+    """Oversized markdown sections split at line boundaries, not dropped."""
+    body = "\n".join(f"line {i} with enough text to push us over" for i in range(200))
+    md = f"# Big Section\n\n{body}\n"
+    chunks = chunk_text("big.md", "markdown", md, max_chunk_chars=400)
+    assert chunks
+    for c in chunks:
+        assert len(c.content) <= 400

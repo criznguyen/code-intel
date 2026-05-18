@@ -123,8 +123,11 @@ def index(
     except Exception as e:
         err_console.print(f"[red]index failed:[/] {e}")
         raise typer.Exit(code=1) from e
+    skipped = stats.get("skipped", 0)
+    suffix = f" skipped={skipped} (see warnings above)" if skipped else ""
     console.print(
-        f"[green]indexed[/] files={stats['files']} chunks={stats['chunks']} embedded={stats['embedded']}"
+        f"[green]indexed[/] files={stats['files']} chunks={stats['chunks']} "
+        f"embedded={stats['embedded']}{suffix}"
     )
 
 
@@ -164,12 +167,15 @@ def serve(
 def install_services(
     instance: str = typer.Option(..., "--instance", help="Instance name, e.g. 'solanabot'."),
     target: Path = typer.Option(None, "--target"),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite existing unit files (recovers from stale templates)."
+    ),
 ) -> None:
     """Render + install systemd user units for a given (instance, target)."""
     target_path = _resolve_target(target)
     from code_intel.systemd import install_for_instance
 
-    info = install_for_instance(instance, target_path)
+    info = install_for_instance(instance, target_path, force=force)
     console.print(f"[green]installed services[/] for instance '{instance}'")
     console.print(f"  manifest: {info['manifest']}")
     console.print(f"  units:    {info['units']}")
@@ -184,13 +190,25 @@ def mcp_config(
     target: Path = typer.Option(None, "--target"),
     scope: str = typer.Option("project", "--scope", help="'project' or 'user'."),
 ) -> None:
-    """Print the JSON entry to drop into ~/.claude.json or .mcp.json."""
+    """Print the JSON entry to drop into ~/.claude.json or .mcp.json.
+
+    Project-scoped entries (`.mcp.json` in the repo) are already namespaced
+    by repo path, so the key is just `"code-intel"`. User-scoped entries
+    (`~/.claude.json`) are shared across all projects, so they're keyed
+    `"code-intel-<project>"` to avoid collisions.
+    """
     target_path = _resolve_target(target)
     from code_intel.systemd import render_mcp_entry
 
     entry = render_mcp_entry(target_path, scope=scope)
-    project_name = target_path.name
-    payload = {"mcpServers": {f"code-intel-{project_name}": entry}}
+    if scope == "project":
+        key = "code-intel"
+    elif scope == "user":
+        key = f"code-intel-{target_path.name}"
+    else:
+        err_console.print(f"[red]invalid --scope: {scope!r} (use 'project' or 'user')[/]")
+        raise typer.Exit(code=2)
+    payload = {"mcpServers": {key: entry}}
     console.print_json(json.dumps(payload))
 
 

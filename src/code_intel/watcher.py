@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
 import pathspec
 
-from code_intel._logging import get_logger
+from code_intel._logging import get_logger, setup_logging
 from code_intel.chunker import chunk_file
 from code_intel.config import Config, load_config
 from code_intel.embedder import get_provider
@@ -54,22 +55,46 @@ async def watch(target: Path) -> None:
 
 async def _reindex_files(cfg: Config, files: list[Path]) -> None:
     chunks = []
+    max_chunk_chars = cfg.index.max_chunk_chars
     for f in files:
-        chunks.extend(chunk_file(f, cfg.target, cfg.index.max_file_bytes))
+        chunks.extend(
+            chunk_file(f, cfg.target, cfg.index.max_file_bytes, max_chunk_chars=max_chunk_chars)
+        )
     if not chunks:
         return
     provider = get_provider(cfg)
     texts = [c.content for c in chunks]
     # Embedder is sync; run in a thread to avoid blocking the loop.
     loop = asyncio.get_running_loop()
-    vectors = await loop.run_in_executor(None, provider.embed, texts)
+    result = await loop.run_in_executor(None, provider.embed, texts)
+    if result.skipped_indices:
+        log.warning(
+            "watcher: skipped %d chunk(s) during re-embed; survivors=%d",
+            len(result.skipped_indices),
+            len(result.vectors),
+        )
+    kept = [c for i, c in enumerate(chunks) if i not in result.skipped_indices]
+    if not kept:
+        return
 
     from code_intel.store import upsert_chunks
 
-    written = await loop.run_in_executor(None, upsert_chunks, cfg, chunks, vectors)
+    written = await loop.run_in_executor(None, upsert_chunks, cfg, kept, result.vectors)
     log.info("upserted %d chunks", written)
 
 
 def run(target: Path) -> None:
     """Blocking entry point used by systemd / CLI."""
     asyncio.run(watch(target))
+
+
+def main() -> None:
+    """Entrypoint for `python -m code_intel.watcher <target>`."""
+    setup_logging("INFO")
+    if len(sys.argv) < 2:
+        sys.exit("usage: python -m code_intel.watcher <target_path>")
+    run(Path(sys.argv[1]))
+
+
+if __name__ == "__main__":
+    main()
