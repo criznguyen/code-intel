@@ -20,7 +20,6 @@ from code_intel.search import (
 )
 from code_intel.store import _reset_db_cache
 
-
 # ---------------------------------------------------------------------------
 # MED-4 residual — drop heading-only markdown sections
 # ---------------------------------------------------------------------------

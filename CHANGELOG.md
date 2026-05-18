@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.1.7] - 2026-05-18
+
+Bundle of 1 P1 perf fix + 2 MED audit closes from the v0.1.6 backlog.
+
+### Fixed
+
+- **cli** (P1 perf, NEW-2 v0.1.6 carry-forward): cap glibc per-thread malloc
+  arenas via a `MALLOC_ARENA_MAX=2` re-exec bootstrap at the top of
+  `cli.py`. tracemalloc on the solanabot 50-query bench showed that the
+  v0.1.6 plateau (589.8 MB) was NOT in the Python heap — only ~28 KiB
+  of growth showed up in `tracemalloc.compare_to`. `/proc/self/status`
+  revealed +546 MB of `RssAnon` instead, i.e. fragmentation inside glibc's
+  per-thread allocator arenas (default `8 × ncores` = 128 arenas on a
+  16-core box). Capping to 2 arenas before any native lib (lancedb,
+  pyarrow, httpx) imports trims the plateau to **225.7 MB** (62 % cut)
+  with p50 latency unchanged at 164.4 ms. The bootstrap re-execs only
+  for known code-intel entry points (`code-intel`, `__main__.py`,
+  `bench_memory.py`) so pytest / ipython / `python -c` imports of the
+  package aren't disturbed. Operator escape hatch:
+  `CODE_INTEL_DISABLE_ARENA_CAP=1`.
+- **chunker** (MED v0.1.6 audit): files larger than `index.max_file_bytes`
+  now emit an explicit `WARNING` log line and are counted in a new
+  `chunker_skipped_files` field returned by `indexer.index_repo`. The CLI
+  `index` command surfaces the count in its final `indexed ...` line. v0.1.6
+  silently returned `[]` from `chunk_file`, leaving operators to deduce the
+  miss from a low chunk count. (`chunker.py:494`.)
+- **config** (MED v0.1.6 audit): `zoekt.enabled = true` is now rejected at
+  config load time with a `ValueError` pointing at the README v0.2 roadmap.
+  The flag was a no-op stub in v0.1 — no producer or consumer ever consulted
+  it at runtime — so accepting it silently misled operators into thinking
+  lexical search was wired. Default value remains `false`. Pydantic
+  `model_validator(mode="after")` gate.
+
+### Added
+
+- 13 new regression tests in `tests/test_v0_1_7_fixes.py` (7 for the arena
+  bootstrap gating matrix, 2 for the chunker oversize-skip log + counter,
+  3 for the Zoekt validator, 1 default-loads sanity).
+
+### Notes
+
+- **Investigation log for NEW-2**: tried `lancedb.Session` cache caps
+  (`index_cache_size_bytes`, `metadata_cache_size_bytes`) — no effect,
+  session-tracked cache stayed under 7 KB while RSS grew to 633 MB.
+  Tried `fast_search()` — broke recall because no IVF index exists
+  (collection is small enough for flat scan; 0 results returned). Tried
+  `select()` to drop the `content` column — only saved ~14 MB on the
+  next plateau, irrelevant. Tried `malloc_trim(0)` mid-process — no
+  release. The arena cap is the only fix that actually works.
+
 ## [0.1.6] - 2026-05-18
 
 Bundle of 2 new findings + 4 chore items surfaced after the v0.1.5 ship.

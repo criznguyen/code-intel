@@ -18,7 +18,6 @@ Items:
 from __future__ import annotations
 
 import logging
-import shutil
 import warnings
 from pathlib import Path
 from unittest.mock import patch
@@ -33,7 +32,6 @@ from code_intel.config import default_config
 from code_intel.embedder import OllamaProvider
 from code_intel.search import _reset_provider_cache, quick_cli_search
 from code_intel.store import _list_table_names, _reset_db_cache
-
 
 # ---------------------------------------------------------------------------
 # BL-1 — list_tables() membership works across LanceDB versions
@@ -139,7 +137,7 @@ def test_embedder_emits_per_batch_progress_log(caplog: pytest.LogCaptureFixture)
     so a foreground ``--full`` reindex isn't visually frozen."""
 
     class _StubBatch(OllamaProvider):  # type: ignore[misc]
-        def __init__(self):  # noqa: D401 — minimal stub, no super().__init__
+        def __init__(self):
             self.endpoint = "http://stub"
             self.model = "stub"
             self.batch_size = 2
@@ -178,7 +176,7 @@ def test_embedder_skips_batch_log_for_single_query() -> None:
     records: list[logging.LogRecord] = []
 
     class _Capture(logging.Handler):
-        def emit(self, record):  # noqa: D401
+        def emit(self, record):
             records.append(record)
 
     handler = _Capture(level=logging.INFO)

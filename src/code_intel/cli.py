@@ -2,16 +2,82 @@
 
 from __future__ import annotations
 
-import json
-import sys
-from pathlib import Path
+# v0.1.7 NEW-1 perf: cap glibc's per-thread malloc arenas BEFORE any native
+# extension (httpx, lancedb, pyarrow) gets a chance to allocate. The default
+# `MALLOC_ARENA_MAX = 8 * ncores` causes severe allocator fragmentation on
+# repeated LanceDB queries: 50 semantic_search calls on a 20 MB index pushed
+# RssAnon from 71 MB → 617 MB on a 16-core box. Capping arenas at 2 traps
+# the working set at ~220 MB plateau (62 % cut) with no measured latency
+# regression. glibc reads MALLOC_ARENA_MAX once at process start, so we must
+# re-exec ourselves if it wasn't set in the environment we inherited.
+import os as _os
+import sys as _sys
 
-import typer
-from rich.console import Console
+_ARENA_SENTINEL = "_CODE_INTEL_ARENA_BOOTSTRAPPED"
 
-from code_intel import __version__
-from code_intel._logging import setup_logging
-from code_intel.config import (
+
+def _should_arena_bootstrap() -> bool:
+    """Re-exec to inject MALLOC_ARENA_MAX only for top-level CLI invocations.
+
+    We refuse to re-exec when we look like we're being imported as a library
+    (interactive ``python``, ``python -c "..."``, pytest, IPython, etc.) because
+    re-execing those would either lose user state or strip the inline code,
+    and re-execing pytest mid-test-collection breaks its plugin state.
+
+    Detection: argv[0] basename must look like a code-intel entry point —
+    either an installed ``code-intel`` shim, the ``__main__`` module form, or
+    the bench script. Anything else (``pytest``, ``ipython``, ``-c``, etc.)
+    skips the cap so other Python workloads aren't disturbed.
+    """
+    if not _sys.platform.startswith("linux"):
+        return False
+    if _os.environ.get(_ARENA_SENTINEL) == "1":
+        return False
+    if _os.environ.get("CODE_INTEL_DISABLE_ARENA_CAP") == "1":
+        return False
+    argv0 = _sys.argv[0] if _sys.argv else ""
+    if not argv0 or argv0.startswith("-"):
+        return False
+    try:
+        if not _os.path.isfile(argv0):
+            return False
+    except OSError:
+        return False
+    basename = _os.path.basename(argv0)
+    # Whitelist: known code-intel entry shapes only. ``__main__.py`` covers
+    # ``python -m code_intel``; ``code-intel`` covers the installed uv-tool
+    # shim; ``bench_memory.py`` covers the repo bench. Anything else (pytest,
+    # ipython, gunicorn, …) silently skips the cap.
+    allowed = {"__main__.py", "code-intel", "bench_memory.py"}
+    return basename in allowed
+
+
+if _should_arena_bootstrap():
+    # v0.1.7 NEW-1 perf: cap glibc's per-thread malloc arenas BEFORE any native
+    # extension (httpx, lancedb, pyarrow) gets a chance to allocate. The default
+    # `MALLOC_ARENA_MAX = 8 * ncores` causes severe allocator fragmentation on
+    # repeated LanceDB queries: 50 semantic_search calls on a 20 MB index pushed
+    # RssAnon from 71 MB → 617 MB on a 16-core box. Capping arenas at 2 traps
+    # the working set at ~220 MB plateau (62 % cut) with no measured latency
+    # regression. glibc reads MALLOC_ARENA_MAX once at process start, so we
+    # re-exec ourselves with the same argv to inject it.
+    if "MALLOC_ARENA_MAX" not in _os.environ:
+        _os.environ["MALLOC_ARENA_MAX"] = "2"
+    _os.environ[_ARENA_SENTINEL] = "1"
+    _os.execvpe(_sys.executable, [_sys.executable, *_sys.argv], _os.environ)
+
+# Imports below intentionally trail the arena bootstrap block. Moving them
+# above would defeat the cap because lancedb / pyarrow alloc on import.
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import typer  # noqa: E402
+from rich.console import Console  # noqa: E402
+
+from code_intel import __version__  # noqa: E402
+from code_intel._logging import setup_logging  # noqa: E402
+from code_intel.config import (  # noqa: E402
     CODEINDEX_DIRNAME,
     CONFIG_FILENAME,
     default_config,
@@ -154,9 +220,17 @@ def index(
     prune_suffix = f" pruned={pruned}" if prune else ""
     cache_hits = stats.get("cache_hits", 0)
     cache_suffix = f" cache_hits={cache_hits}" if cache_hits else ""
+    # v0.1.7 MED: surface files that chunker dropped for exceeding max_file_bytes
+    # so operators don't have to deduce a silent skip from a missing chunk count.
+    chunker_skipped = stats.get("chunker_skipped_files", 0)
+    chunker_suffix = (
+        f" chunker_skipped_files={chunker_skipped} (over max_file_bytes; see warnings)"
+        if chunker_skipped
+        else ""
+    )
     console.print(
         f"[green]indexed[/] files={stats['files']} chunks={stats['chunks']} "
-        f"embedded={stats['embedded']}{suffix}{prune_suffix}{cache_suffix}"
+        f"embedded={stats['embedded']}{suffix}{prune_suffix}{cache_suffix}{chunker_suffix}"
     )
 
 

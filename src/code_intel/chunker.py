@@ -486,12 +486,24 @@ def chunk_file(
     max_bytes: int,
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
 ) -> list[Chunk]:
-    """Chunk a single on-disk file. Returns [] on skip/error."""
+    """Chunk a single on-disk file. Returns [] on skip/error.
+
+    v0.1.7 (MED audit): files that exceed ``max_bytes`` emit a WARNING log so
+    operators don't have to deduce a silent skip from a missing chunk count.
+    See ``index_repo`` which also counts these into ``chunker_skipped_files``.
+    """
     try:
         size = file_path.stat().st_size
     except OSError:
         return []
     if size > max_bytes:
+        log.warning(
+            "chunker skip: %s (size %d > max_file_bytes %d) — raise index.max_file_bytes "
+            "in .codeindex/config.toml if this file should be indexed",
+            file_path,
+            size,
+            max_bytes,
+        )
         return []
 
     lang = detect_lang(file_path)

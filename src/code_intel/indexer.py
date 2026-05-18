@@ -201,14 +201,32 @@ def index_repo(
     log.info("discovered %d files", len(files))
 
     all_chunks: list[Chunk] = []
+    chunker_skipped_files = 0  # v0.1.7: count files dropped by chunk_file (size cap)
     max_chunk_chars = cfg.index.max_chunk_chars
+    max_file_bytes = cfg.index.max_file_bytes
     for fp in files:
+        # Count oversize-skips up front so the final stats line is accurate
+        # even when the produced-chunks fallthrough below short-circuits early.
+        # detect_lang() returning None also makes chunk_file return [], but
+        # those are filtered by include_globs already; size-cap is the one
+        # silent skip we still need to surface.
+        try:
+            if fp.stat().st_size > max_file_bytes:
+                chunker_skipped_files += 1
+        except OSError:
+            pass
         chunks = chunk_file(
-            fp, cfg.target, cfg.index.max_file_bytes, max_chunk_chars=max_chunk_chars
+            fp, cfg.target, max_file_bytes, max_chunk_chars=max_chunk_chars
         )
         if chunks:
             all_chunks.extend(chunks)
     log.info("produced %d chunks", len(all_chunks))
+    if chunker_skipped_files:
+        log.info(
+            "chunker skipped %d file(s) over max_file_bytes=%d",
+            chunker_skipped_files,
+            max_file_bytes,
+        )
 
     if not all_chunks:
         return {
@@ -217,6 +235,7 @@ def index_repo(
             "embedded": 0,
             "skipped": 0,
             "cache_hits": 0,
+            "chunker_skipped_files": chunker_skipped_files,
         }
 
     # Content-hash dedup for incremental (--since) re-indexes only. A full
@@ -253,6 +272,7 @@ def index_repo(
             "embedded": 0,
             "skipped": 0,
             "cache_hits": cache_hits,
+            "chunker_skipped_files": chunker_skipped_files,
         }
 
     provider = get_provider(cfg)
@@ -283,7 +303,7 @@ def index_repo(
     # the cached survivors. Instead, do a path-narrow delete only for paths
     # that have at least one miss, then add only the embedded misses.
     if since and not force and cache_hits > 0:
-        from code_intel.store import _records, _open_or_create_table, open_db, _sql_quote
+        from code_intel.store import _open_or_create_table, _records, _sql_quote, open_db
 
         if kept_chunks:
             rows = _records(kept_chunks, result.vectors)
@@ -312,4 +332,5 @@ def index_repo(
         "embedded": written,
         "skipped": len(result.skipped_indices),
         "cache_hits": cache_hits,
+        "chunker_skipped_files": chunker_skipped_files,
     }

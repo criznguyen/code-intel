@@ -27,6 +27,13 @@ from pathlib import Path
 # Make `code_intel` importable when this script is run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+# v0.1.7: import cli FIRST so the MALLOC_ARENA_MAX re-exec bootstrap fires
+# before any LanceDB / Arrow alloc. Without this, the bench under-reports the
+# real production plateau because uv-run wasn't routed through the CLI shim.
+# Importing cli here is cheap (typer is already a dep) and idempotent: when
+# `MALLOC_ARENA_MAX` is already set by the operator, no re-exec happens.
+import code_intel.cli  # noqa: F401, E402
+
 
 def _rss_mb() -> float:
     """Process-only RSS in MB. ru_maxrss is in KB on Linux, bytes on macOS."""

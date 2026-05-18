@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import tomli_w
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 CONFIG_FILENAME = "config.toml"
 CODEINDEX_DIRNAME = ".codeindex"
@@ -83,6 +83,22 @@ class ZoektSection(BaseModel):
     enabled: bool = False
     docker_image: str = "sourcegraph/zoekt-indexserver:latest"
     index_dir: str = ".codeindex/zoekt"
+
+    @model_validator(mode="after")
+    def _reject_enabled_until_v0_2(self) -> ZoektSection:
+        """v0.1.7 MED: Zoekt is stubbed in v0.1; planned in v0.2 (see README
+        roadmap). Until then ``zoekt.enabled = true`` would silently no-op
+        because no producer/consumer ever consults the flag at runtime. Fail
+        loudly at config-load time so operators don't think they have lexical
+        search wired when they don't.
+        """
+        if self.enabled:
+            raise ValueError(
+                "zoekt.enabled is reserved for v0.2 (see README roadmap). "
+                "Set it back to false to load this config; lexical search "
+                "ships with the v0.2 release."
+            )
+        return self
 
 
 class Config(BaseModel):
