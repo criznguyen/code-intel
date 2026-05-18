@@ -64,7 +64,6 @@ def test_watcher_main_handles_sigint_cleanly(tmp_path: Path) -> None:
         # Wait until watcher logs "watching" (loop alive) or 8s timeout.
         deadline = time.monotonic() + 8.0
         started = False
-        stderr_buf: list[str] = []
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 break

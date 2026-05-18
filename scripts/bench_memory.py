@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # real production plateau because uv-run wasn't routed through the CLI shim.
 # Importing cli here is cheap (typer is already a dep) and idempotent: when
 # `MALLOC_ARENA_MAX` is already set by the operator, no re-exec happens.
-import code_intel.cli  # noqa: F401, E402
+import code_intel.cli  # noqa: F401
 
 
 def _rss_mb() -> float:
