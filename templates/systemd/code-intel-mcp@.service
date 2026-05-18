@@ -4,6 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
+# Cap glibc per-thread malloc arenas BEFORE Python starts. The code-intel CLI
+# entry point has a self-reexec bootstrap that also sets this, but pre-setting
+# here is belt-and-suspenders (saves one fork+exec on every restart and keeps
+# the unit aligned with code-intel-watcher@.service which does NOT have a
+# cli.py bootstrap).
+Environment="MALLOC_ARENA_MAX=2"
 # {{ code_intel_bin }} is the absolute path of the code-intel CLI at install
 # time. Avoids systemd user-session PATH issues (no shims, no `code-intel`).
 # The instance name (%i) maps to a manifest at

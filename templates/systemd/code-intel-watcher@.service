@@ -4,6 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
+# Cap glibc per-thread malloc arenas BEFORE Python starts. Belt-and-suspenders:
+# v0.1.7's cli.py self-reexec covers `code-intel ...` invocations, but this
+# unit launches `python -m code_intel.watcher` directly (no cli.py bootstrap),
+# so the env var must be set here to plateau RSS ~220MB instead of ~589MB on
+# multi-thread embedder workloads.
+Environment="MALLOC_ARENA_MAX=2"
 # {{ python_bin }} is the absolute path of the code-intel interpreter at install
 # time. Avoids systemd user-session PATH issues (no pyenv shims, no `python`).
 # The instance name (%i) maps to a manifest at

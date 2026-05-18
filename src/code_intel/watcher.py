@@ -103,8 +103,17 @@ async def _reindex_files(cfg: Config, files: list[Path]) -> None:
 
 
 def run(target: Path) -> None:
-    """Blocking entry point used by systemd / CLI."""
-    asyncio.run(watch(target))
+    """Blocking entry point used by systemd / CLI.
+
+    SIGINT / Ctrl-C exits cleanly with no Python traceback printed.
+    ``asyncio.run`` would otherwise surface ``CancelledError`` →
+    ``KeyboardInterrupt`` propagation as a noisy traceback (Gap 6 LOW,
+    v0.1.7 audit).
+    """
+    try:
+        asyncio.run(watch(target))
+    except KeyboardInterrupt:
+        log.info("watcher stopped (SIGINT)")
 
 
 def main() -> None:
@@ -112,7 +121,13 @@ def main() -> None:
     setup_logging("INFO")
     if len(sys.argv) < 2:
         sys.exit("usage: python -m code_intel.watcher <target_path>")
-    run(Path(sys.argv[1]))
+    try:
+        run(Path(sys.argv[1]))
+    except KeyboardInterrupt:
+        # Belt-and-suspenders: if ``run`` re-raises (shouldn't, but the
+        # try/except above is the only contract), still exit 0 quietly.
+        log.info("watcher stopped (SIGINT)")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
