@@ -31,11 +31,107 @@ local LanceDB index, a local Ollama embedder, and an MCP server your agent
 already knows how to talk to. Zoekt and LSP support are documented stubs for
 v0.2; ripgrep + tree-sitter cover v0.1.
 
+## Install
+
+### Prerequisites
+
+- **Python ≥ 3.11**
+- **Ollama** running at `http://localhost:11434` with the default embedding
+  model pulled:
+
+  ```bash
+  # install Ollama: https://ollama.com
+  ollama pull embeddinggemma
+  ```
+
+  You can swap the model later; see [Embedding model options](#embedding-model-options).
+
+- **External binaries** used by the MCP search tools: `rg` (ripgrep),
+  `ast-grep`, `fd`. Install via your package manager (`brew`/`apt`/`cargo`);
+  `code-intel doctor` will tell you exactly what's missing.
+
+### Install the CLI
+
+Recommended (isolated venv, fast):
+
+```bash
+uv tool install code-intel
+```
+
+Alternatives:
+
+```bash
+pipx install code-intel
+# or
+pip install code-intel
+```
+
+### Verify
+
+```bash
+code-intel --version
+code-intel --help
+code-intel doctor
+```
+
+`doctor` runs 8 checks (`ripgrep`, `ast-grep`, `fd`, Ollama model availability,
+`docker`, `basedpyright`, LanceDB writability, config). Each `FAIL`/`WARN`
+prints a hint for the fix.
+
+### Register the MCP server in Claude Code
+
+Add an entry under `mcpServers` in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "code-intel": {
+      "command": "code-intel",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Code. The tools `search_lexical`, `semantic_search`,
+`structural`, `get_digest`, and `list_modules` will become available.
+
+> Tip: `code-intel mcp-config --target .` prints a ready-to-paste JSON block
+> scoped to the current repo if you'd rather wire it per-project via
+> `.mcp.json`.
+
+### Upgrade and uninstall
+
+```bash
+# upgrade
+uv tool upgrade code-intel
+# or
+pipx upgrade code-intel
+# or
+pip install -U code-intel
+
+# uninstall
+uv tool uninstall code-intel
+# or
+pipx uninstall code-intel
+# or
+pip uninstall code-intel
+```
+
+### Development install (from source)
+
+```bash
+git clone https://github.com/criznguyen/code-intel
+cd code-intel
+uv sync
+uv run code-intel doctor
+```
+
 ## Quickstart
 
 ```bash
-# 1. install
-pipx install code-intel        # or: uv tool install code-intel
+# 1. install (see Install section above for alternatives)
+uv tool install code-intel
 
 # 2. bootstrap a repo (creates .codeindex/ and a default config)
 cd ~/myrepo
