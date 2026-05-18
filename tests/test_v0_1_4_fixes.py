@@ -168,11 +168,15 @@ def test_markdown_tilde_fence_also_handled() -> None:
     md = """\
 # Top
 
+Top intro body.
+
 ~~~
 # fake heading
 ~~~
 
 ## Real Next
+
+Real body content under Real Next.
 """
     chunks = chunk_text("doc.md", "markdown", md)
     titles = {c.symbol for c in chunks}

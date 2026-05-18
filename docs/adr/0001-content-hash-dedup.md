@@ -1,6 +1,6 @@
 # ADR-0001: content-hash dedup for `--since` re-index
 
-- **Status**: Proposed
+- **Status**: Accepted — shipped in v0.1.5
 - **Date**: 2026-05-18
 - **Scope**: code-intel v0.1.5
 

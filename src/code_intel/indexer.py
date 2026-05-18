@@ -174,10 +174,22 @@ def prune_orphans(cfg: Config) -> int:
     return removed
 
 
-def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:
+def index_repo(
+    cfg: Config,
+    since: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
     """Run the full chunk-and-embed pipeline.
 
-    Returns a stats dict: {files, chunks, embedded, skipped}.
+    When ``since`` is set, we content-hash-dedup against the existing table:
+    for each chunk whose ``(path, symbol, start_line, content_hash)`` matches
+    a stored row, we skip the embed call entirely (the row stays in place).
+    Only changed or new chunks pay the embed cost. (INFO-11 part B, v0.1.5.)
+
+    When ``force=True``, the dedup cache is bypassed (use after changing the
+    embedding model / dim, where stored vectors are stale).
+
+    Returns: {files, chunks, embedded, skipped, cache_hits}.
     """
     files = discover_files(cfg, since=since)
     log.info("discovered %d files", len(files))
@@ -193,10 +205,52 @@ def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:
     log.info("produced %d chunks", len(all_chunks))
 
     if not all_chunks:
-        return {"files": len(files), "chunks": 0, "embedded": 0, "skipped": 0}
+        return {
+            "files": len(files),
+            "chunks": 0,
+            "embedded": 0,
+            "skipped": 0,
+            "cache_hits": 0,
+        }
+
+    # Content-hash dedup for incremental (--since) re-indexes only. A full
+    # re-index always re-embeds — typical use is "embedding model changed".
+    cache_hits = 0
+    chunks_to_embed: list[Chunk] = all_chunks
+    if since and not force:
+        from code_intel.store import lookup_existing_hashes
+
+        affected_paths = {c.path for c in all_chunks}
+        existing = lookup_existing_hashes(cfg, affected_paths)
+        misses: list[Chunk] = []
+        for c in all_chunks:
+            key = (c.path, c.symbol, int(c.start_line))
+            if existing.get(key) == c.content_hash:
+                cache_hits += 1
+                continue
+            misses.append(c)
+        chunks_to_embed = misses
+        log.info(
+            "content-hash cache: %d/%d hits, %d to embed",
+            cache_hits,
+            len(all_chunks),
+            len(chunks_to_embed),
+        )
+
+    if not chunks_to_embed:
+        # Everything hit the cache: nothing to embed and nothing to upsert.
+        # The existing rows stay in place; no delete-before-add for the
+        # affected paths so cached rows survive.
+        return {
+            "files": len(files),
+            "chunks": len(all_chunks),
+            "embedded": 0,
+            "skipped": 0,
+            "cache_hits": cache_hits,
+        }
 
     provider = get_provider(cfg)
-    texts = [c.content for c in all_chunks]
+    texts = [c.content for c in chunks_to_embed]
     result = provider.embed(texts)
     log.info(
         "embedded %d vectors via %s (skipped %d)",
@@ -206,7 +260,9 @@ def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:
     )
 
     # Filter out skipped chunks before upsert; their indices map 1:1 with `texts`.
-    kept_chunks = [c for i, c in enumerate(all_chunks) if i not in result.skipped_indices]
+    kept_chunks = [
+        c for i, c in enumerate(chunks_to_embed) if i not in result.skipped_indices
+    ]
     if len(kept_chunks) != len(result.vectors):
         # Defensive: provider contract bug. Refuse to corrupt the table.
         raise RuntimeError(
@@ -214,14 +270,40 @@ def index_repo(cfg: Config, since: str | None = None) -> dict[str, int]:
             f"{len(kept_chunks)} chunks survived skip-filtering"
         )
 
-    _write_skipped_log(cfg, result, all_chunks)
+    _write_skipped_log(cfg, result, chunks_to_embed)
 
-    from code_intel.store import upsert_chunks
+    # When we used the content-hash cache we MUST NOT delete-before-add the
+    # affected paths (upsert_chunks does that per-path) — that would wipe out
+    # the cached survivors. Instead, do a path-narrow delete only for paths
+    # that have at least one miss, then add only the embedded misses.
+    if since and not force and cache_hits > 0:
+        from code_intel.store import _records, _open_or_create_table, open_db, _sql_quote
 
-    written = upsert_chunks(cfg, kept_chunks, result.vectors)
+        if kept_chunks:
+            rows = _records(kept_chunks, result.vectors)
+            db = open_db(cfg)
+            tbl = _open_or_create_table(db, cfg, sample_rows=rows)
+            # Per-(path, symbol, start_line) selective delete so cache-hit
+            # rows for the same file survive.
+            ids_to_replace = {r["id"] for r in rows}
+            if ids_to_replace:
+                id_list = ",".join(_sql_quote(i) for i in ids_to_replace)
+                try:
+                    tbl.delete(f"id IN ({id_list})")
+                except Exception as e:  # pragma: no cover
+                    log.debug("selective delete before incremental add failed: %s", e)
+            tbl.add(rows)
+            written = len(rows)
+        else:
+            written = 0
+    else:
+        from code_intel.store import upsert_chunks
+
+        written = upsert_chunks(cfg, kept_chunks, result.vectors)
     return {
         "files": len(files),
         "chunks": len(all_chunks),
         "embedded": written,
         "skipped": len(result.skipped_indices),
+        "cache_hits": cache_hits,
     }

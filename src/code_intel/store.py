@@ -170,6 +170,46 @@ def search(
     return list(df)
 
 
+def lookup_existing_hashes(cfg: Config, paths: set[str]) -> dict[tuple[str, str, int], str]:
+    """Return ``{(path, symbol, start_line): content_hash}`` for rows whose
+    ``path`` is in the given set.
+
+    Used by the incremental indexer to skip embedding for chunks whose
+    content_hash already matches what's in the DB. Paths not in the DB simply
+    return no entries (caller treats as a full re-embed).
+
+    Returns an empty dict on cold start (no table yet) or on read failure.
+    """
+    if not paths:
+        return {}
+    db = open_db(cfg)
+    name = cfg.lancedb.table
+    if name not in db.table_names():
+        return {}
+    tbl = db.open_table(name)
+    path_list = ",".join(_sql_quote(p) for p in paths)
+    try:
+        rows = (
+            tbl.search()
+            .where(f"path IN ({path_list})")
+            .select(["path", "symbol", "start_line", "content_hash"])
+            .limit(1_000_000)
+            .to_list()
+        )
+    except Exception as e:  # pragma: no cover
+        log.debug("lookup_existing_hashes failed: %s", e)
+        return {}
+    out: dict[tuple[str, str, int], str] = {}
+    for r in rows:
+        h = r.get("content_hash") or ""
+        # Legacy rows pre-v0.1.4 may have empty hash. Treat as cache miss
+        # by simply not registering them in the lookup dict.
+        if not h:
+            continue
+        out[(r["path"], r["symbol"], int(r["start_line"]))] = h
+    return out
+
+
 def list_indexed_paths(cfg: Config) -> set[str]:
     db = open_db(cfg)
     name = cfg.lancedb.table

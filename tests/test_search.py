@@ -13,7 +13,7 @@ import pytest
 
 from code_intel.config import default_config
 from code_intel.embedder import EmbedResult
-from code_intel.search import semantic_search
+from code_intel.search import _reset_provider_cache, semantic_search
 
 
 class _StubProvider:
@@ -31,6 +31,7 @@ class _StubProvider:
 
 def test_semantic_search_unpacks_vectors_field(tmp_path) -> None:
     """Happy path: provider returns vectors, store.search is called with [0]."""
+    _reset_provider_cache()
     cfg = default_config(project_name="t")
     cfg._target = tmp_path
 
@@ -56,7 +57,10 @@ def test_semantic_search_unpacks_vectors_field(tmp_path) -> None:
         patch("code_intel.search.get_provider", return_value=provider),
         patch("code_intel.store.search", return_value=fake_rows) as db_search,
     ):
-        results = semantic_search(cfg, "what is foo", k=5)
+        # rerank=False so this test pins the raw-vector contract (no
+        # overfetch / no reorder). The rerank=True path is tested separately
+        # in test_v0_1_5_fixes.py.
+        results = semantic_search(cfg, "what is foo", k=5, rerank=False)
 
     assert len(results) == 1
     assert results[0]["path"] == "src/foo.py"
@@ -68,10 +72,12 @@ def test_semantic_search_unpacks_vectors_field(tmp_path) -> None:
     assert kwargs.get("k") == 5
     # provider.embed was called exactly once with the query wrapped in a list.
     assert provider.calls == [["what is foo"]]
+    _reset_provider_cache()
 
 
 def test_semantic_search_raises_when_query_embed_skipped(tmp_path) -> None:
     """Provider skipped the query itself → RuntimeError with the skip reason."""
+    _reset_provider_cache()
     cfg = default_config(project_name="t")
     cfg._target = tmp_path
 
@@ -86,3 +92,4 @@ def test_semantic_search_raises_when_query_embed_skipped(tmp_path) -> None:
         semantic_search(cfg, "any query", k=5)
 
     assert "test" in str(excinfo.value)
+    _reset_provider_cache()

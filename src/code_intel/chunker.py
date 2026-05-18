@@ -300,6 +300,21 @@ def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chun
     chunks: list[Chunk] = []
     for title, start, body in sections:
         content = "\n".join(body)
+        # MED-4 residual (v0.1.5): drop heading-only sections.
+        # Files with stacked metadata headings (`## Date: …`, `## Version: …`)
+        # produce 1-line "section" chunks containing only the heading line and
+        # no body. These are useless retrieval noise — they get embedded as
+        # short title strings and dilute top-K. We treat a section as
+        # heading-only when its non-blank lines == 1 and that line is itself
+        # a heading. The very first chunk of a file (synthetic title before
+        # the first explicit heading) is exempt — keep it as a file-anchor.
+        non_blank = [ln for ln in body if ln.strip()]
+        is_heading_only = (
+            len(non_blank) == 1
+            and non_blank[0].lstrip().startswith(("# ", "## "))
+        )
+        if is_heading_only:
+            continue
         if len(content) > max_chunk_chars:
             # Split oversized markdown section at line boundaries.
             chunks.extend(
@@ -327,6 +342,10 @@ def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chun
             )
         )
     if not chunks:
+        # Either the file was empty/whitespace OR every section was
+        # heading-only. Either way: fall through to whole-file fallback so
+        # callers get a usable chunk (and `text.strip()` is empty path is
+        # already short-circuited by `chunk_file` upstream).
         chunks.extend(_whole_file_chunk(rel_path, "markdown", text, max_chunk_chars))
     return chunks
 

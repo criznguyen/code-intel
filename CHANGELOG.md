@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.1.5] - 2026-05-18
+
+Closes the 4 residual items from the v0.1.4 audit on solanabot.
+
+### Fixed
+
+- **chunker** (MED-4 residual): markdown chunker now drops heading-only sections
+  (e.g. `## Date: 2026-03-28` followed immediately by `## Version: 1.0`).
+  v0.1.4 still emitted 13 such 1-line "section" chunks on the solanabot
+  corpus — pure retrieval noise with no body content. The chunker treats a
+  section as heading-only when its single non-blank line is itself a heading;
+  files composed entirely of such sections still fall through to the
+  whole-file fallback so they remain searchable.
+- **search** (LOW-9 follow-up): `EmbeddingProvider` instances are now cached
+  per `(provider, endpoint, model, dim, batch_size, timeout)` tuple. Previously
+  every `semantic_search` call constructed a fresh `OllamaProvider` (and its
+  `httpx.Client`), discarding keep-alive connections. Cache invalidates
+  automatically on any config field change.
+
+### Added
+
+- **indexer** (INFO-11 part B): content-hash dedup for `--since` incremental
+  re-index. New helper `store.lookup_existing_hashes(cfg, paths)` returns
+  `{(path, symbol, start_line) -> content_hash}` for stored rows. The
+  indexer partitions chunks into cache hits (unchanged content) and misses
+  (changed / new), embedding only the misses. On a no-op `--since HEAD`
+  (no file changes) the embed step is skipped entirely. `code-intel index
+  --force` flag bypasses the cache (use after changing embedding model / dim).
+  Closes ADR-0001.
+- **search** reranker: cheap heuristic post-rerank over the top `k * 3`
+  LanceDB candidates. Boosts `kind in (function, method)` (factor 0.85),
+  penalizes `test_*` / `Test*` symbols (factor 1.15), boosts symbol↔query
+  token overlap (factor 0.88 for ≥2 tokens, 0.94 for ≥1), and rewards
+  *symbol coverage* — short symbols whose tokens are mostly in the query
+  get an extra 0.85× (cov ≥0.9) or 0.92× (cov ≥0.5) factor. On solanabot
+  `calculate token2022 transfer fee`, lifts `calculate_fee` from raw #17
+  to reranked #2 (`transfer_fee` at #1), without disturbing top results
+  for general queries like `clmm swap` or `jito tip`. Disable via
+  `semantic_search(..., rerank=False)`.
+- 14 new regression tests in `tests/test_v0_1_5_fixes.py`.
+
+### Notes
+
+- Perf: v0.1.4 measured p50 was 167.2ms vs v0.1.3 149.8ms. Profiling on
+  solanabot shows Ollama embed dominates at ~130ms / call; remaining
+  ~30-40ms is LanceDB ANN + result hydrate. The "regression" is Ollama-side
+  load variance, not a code regression — the v0.1.4 `lancedb.connect` cache
+  works (verified 0 reconnects across 5 queries). The provider cache added
+  here is for clean architecture and ~5-10ms keep-alive savings.
+
 ## [0.1.4] - 2026-05-18
 
 Closes all 11 findings from the v0.1.3 audit.

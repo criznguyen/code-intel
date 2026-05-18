@@ -112,6 +112,11 @@ def index(
         "--prune",
         help="Remove DB rows for files that no longer match include_globs / exist on disk.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Bypass content-hash cache during --since (use after changing embedding model/dim).",
+    ),
 ) -> None:
     """Run the chunk + embed pipeline."""
     target_path = _resolve_target(target)
@@ -127,16 +132,18 @@ def index(
         pruned = 0
         if prune:
             pruned = prune_orphans(cfg)
-        stats = index_repo(cfg, since=since if since else None)
+        stats = index_repo(cfg, since=since if since else None, force=force)
     except Exception as e:
         err_console.print(f"[red]index failed:[/] {e}")
         raise typer.Exit(code=1) from e
     skipped = stats.get("skipped", 0)
     suffix = f" skipped={skipped} (see warnings above)" if skipped else ""
     prune_suffix = f" pruned={pruned}" if prune else ""
+    cache_hits = stats.get("cache_hits", 0)
+    cache_suffix = f" cache_hits={cache_hits}" if cache_hits else ""
     console.print(
         f"[green]indexed[/] files={stats['files']} chunks={stats['chunks']} "
-        f"embedded={stats['embedded']}{suffix}{prune_suffix}"
+        f"embedded={stats['embedded']}{suffix}{prune_suffix}{cache_suffix}"
     )
 
 
