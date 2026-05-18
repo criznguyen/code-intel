@@ -65,7 +65,11 @@ def semantic_search(
 ) -> list[dict[str, Any]]:
     """Embed query and search LanceDB."""
     provider = get_provider(cfg)
-    [vec] = provider.embed([query])
+    result = provider.embed([query])
+    if not result.vectors:
+        reason = result.skipped_reasons.get(0, "unknown")
+        raise RuntimeError(f"failed to embed query: {reason}")
+    vec = result.vectors[0]
 
     from code_intel.store import search as db_search
 

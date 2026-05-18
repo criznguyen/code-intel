@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.3] - 2026-05-18
+
+### Fixed
+- `search.py` failed with "cannot unpack non-iterable EmbedResult object" — caller missed during v0.1.2 embedder return-type refactor. Updated to use `.vectors` and raise `RuntimeError` with `skipped_reasons` if the query itself failed to embed.
+
 ## [0.1.2] - 2026-05-18
 
 ### Fixed
