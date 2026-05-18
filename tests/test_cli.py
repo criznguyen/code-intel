@@ -19,16 +19,24 @@ def test_version() -> None:
 
 
 def test_help() -> None:
+    import re
+
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
+    collapsed = re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", result.output))
     for cmd in ["init", "index", "serve", "doctor", "mcp-config", "install-services"]:
-        assert cmd in result.output
+        assert cmd in collapsed
 
 
 def test_doctor_help() -> None:
     result = runner.invoke(app, ["doctor", "--help"])
     assert result.exit_code == 0
-    assert "--target" in result.output
+    # Strip ANSI + collapse whitespace so we don't depend on TTY width wrapping.
+    import re
+
+    collapsed = re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", result.output))
+    assert "--target" in collapsed
+    assert "Health-check" in collapsed
 
 
 def test_init_creates_config(tmp_path: Path) -> None:
