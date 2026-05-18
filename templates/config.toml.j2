@@ -1,0 +1,38 @@
+# code-intel configuration. Edit and re-run `code-intel index` to apply.
+
+[project]
+name = "{{ project_name }}"
+root = "."
+
+[index]
+include_globs = [
+    "**/*.rs", "**/*.py", "**/*.go",
+    "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx",
+    "**/*.java", "**/*.kt", "**/*.md",
+]
+exclude_globs = [
+    "**/target/**", "**/node_modules/**", "**/__pycache__/**",
+    "**/.venv/**", "**/venv/**", "**/.codeindex/**",
+    "**/dist/**", "**/build/**", "**/.git/**",
+]
+max_file_bytes = 1000000
+
+[embedding]
+provider = "ollama"
+model = "embeddinggemma"
+endpoint = "http://localhost:11434"
+batch_size = 32
+dim = 768
+
+[lancedb]
+path = ".codeindex/lancedb"
+table = "chunks"
+
+[mcp]
+transport = "stdio"
+socket_path = "/run/user/{uid}/code-intel-{project}.sock"
+
+[zoekt]
+enabled = false
+docker_image = "sourcegraph/zoekt-indexserver:latest"
+index_dir = ".codeindex/zoekt"

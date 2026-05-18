@@ -1,0 +1,14 @@
+[Unit]
+Description=code-intel file watcher (instance %i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'TARGET=$(awk -F\\\" "/^target/ {print \\$2}" %h/.config/code-intel/projects/%i.toml); exec python -m code_intel.watcher "$TARGET"'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=code-intel MCP server (instance %i)
+After=network.target
+
+[Service]
+Type=simple
+# The instance name (%i) maps to a manifest at
+# ~/.config/code-intel/projects/%i.toml which carries the target path.
+ExecStart=/bin/sh -c 'TARGET=$(awk -F\\\" "/^target/ {print \\$2}" %h/.config/code-intel/projects/%i.toml); exec code-intel serve --target "$TARGET" --stdio'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

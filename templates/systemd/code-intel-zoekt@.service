@@ -1,0 +1,14 @@
+[Unit]
+Description=code-intel Zoekt index server (instance %i) — STUB for v0.1
+After=network.target docker.service
+
+[Service]
+Type=simple
+# NOTE: v0.1 stub. The unit file is provided so the install layout is final,
+# but the daemon is not implemented yet. Zoekt support is planned for v0.2.
+# When you start this unit it will simply log a notice and exit cleanly.
+ExecStart=/bin/sh -c 'echo "[code-intel-zoekt@%i] Zoekt support stubbed in v0.1; see README roadmap." 1>&2; exit 0'
+Restart=no
+
+[Install]
+WantedBy=default.target
