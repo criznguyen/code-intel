@@ -132,5 +132,9 @@ def has_failures(results: list[CheckResult]) -> bool:
     return any(r.level == "FAIL" for r in results)
 
 
+def has_warnings(results: list[CheckResult]) -> bool:
+    return any(r.level == "WARN" for r in results)
+
+
 def shell_path_hint() -> str:
     return f"PATH={os.environ.get('PATH', '')}"

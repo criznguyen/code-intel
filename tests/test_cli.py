@@ -134,3 +134,56 @@ def test_install_services_without_force_preserves_existing(tmp_path: Path) -> No
         )
     assert result.exit_code == 0
     assert (fake_unit_dir / "code-intel-watcher@.service").read_text() == sentinel
+
+
+# ---------------------------------------------------------------------------
+# Gap 8 (LOW): `code-intel doctor --strict` — treat WARN as FAIL for CI.
+# Default behavior must remain unchanged (backward compat).
+# ---------------------------------------------------------------------------
+def _warn_only_results():
+    from code_intel.doctor import CheckResult
+
+    return [
+        CheckResult("ripgrep", "PASS", "ripgrep 14.0.0"),
+        CheckResult(
+            "ollama-model",
+            "WARN",
+            "model 'embeddinggemma:latest' not pulled. Run `ollama pull embeddinggemma:latest`",
+        ),
+    ]
+
+
+def test_doctor_warns_on_missing_model_default(tmp_path: Path) -> None:
+    """Default (no --strict): WARN-only results must exit 0 + show the WARN line."""
+    with patch("code_intel.doctor.run_doctor", return_value=_warn_only_results()):
+        result = runner.invoke(app, ["doctor", "--target", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "WARN" in result.output
+    assert "ollama-model" in result.output
+
+
+def test_doctor_fails_on_missing_model_with_strict(tmp_path: Path) -> None:
+    """--strict: a single WARN must escalate to exit 1 + print the strict banner."""
+    with patch("code_intel.doctor.run_doctor", return_value=_warn_only_results()):
+        result = runner.invoke(app, ["doctor", "--target", str(tmp_path), "--strict"])
+    assert result.exit_code == 1, result.output
+    assert "WARN" in result.output
+    assert "--strict" in result.output
+
+
+def test_has_warnings_helper() -> None:
+    """has_warnings flips on at least one WARN; has_failures stays False on WARN-only."""
+    from code_intel.doctor import CheckResult, has_failures, has_warnings
+
+    pass_only = [CheckResult("a", "PASS", "ok")]
+    warn_only = [CheckResult("a", "PASS", "ok"), CheckResult("b", "WARN", "missing")]
+    fail_mixed = [CheckResult("a", "WARN", "missing"), CheckResult("b", "FAIL", "broken")]
+
+    assert has_warnings(pass_only) is False
+    assert has_failures(pass_only) is False
+
+    assert has_warnings(warn_only) is True
+    assert has_failures(warn_only) is False
+
+    assert has_warnings(fail_mixed) is True
+    assert has_failures(fail_mixed) is True
