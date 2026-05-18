@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import tomli_w
 from pydantic import BaseModel, Field
@@ -49,7 +50,10 @@ class IndexSection(BaseModel):
 
 
 class EmbeddingSection(BaseModel):
-    provider: str = "ollama"
+    # Core ships only "ollama"; external plugin packages may register their own
+    # providers by implementing the EmbeddingProvider Protocol. Narrowing to a
+    # Literal here makes config validation reject unknown providers at load time.
+    provider: Literal["ollama"] = "ollama"
     model: str = "embeddinggemma"
     endpoint: str = "http://localhost:11434"
     batch_size: int = 32

@@ -12,8 +12,10 @@ who reuse the same indexing pipeline across many repos.
   checks.
 - A **tree-sitter chunker** that extracts function/class/section-level chunks
   from Rust, Python, Go, TypeScript/JS, Java, Kotlin, and Markdown.
-- An **embedder plugin** with a default `OllamaProvider` (Voyage and OpenAI are
-  stubbed) — embeddings live in a per-repo LanceDB store under `.codeindex/`.
+- An **embedder plugin** with a default `OllamaProvider` — embeddings live in
+  a per-repo LanceDB store under `.codeindex/`. code-intel core is local-first
+  by design; paid-API providers can be added via external plugin packages
+  that implement the `EmbeddingProvider` Protocol.
 - An **MCP server** (FastMCP, stdio transport) that Claude Code, Cursor, or any
   MCP-aware agent can attach to. Exposes: `search_lexical` (ripgrep),
   `semantic_search`, `structural` (ast-grep), `get_digest`, `list_modules`.
@@ -88,7 +90,7 @@ code-intel mcp-config --target . >> /tmp/mcp-snippet.json
 | `index.include_globs` | `**/*.{rs,py,go,ts,tsx,js,jsx,java,kt,md}` | Files to chunk. |
 | `index.exclude_globs` | `target/`, `node_modules/`, `.venv/`, etc. | Filter applied after includes. |
 | `index.max_file_bytes` | `1_000_000` | Skip files larger than this. |
-| `embedding.provider` | `ollama` | Plugin name. `voyage` and `openai` are stubs. |
+| `embedding.provider` | `ollama` | Only `ollama` is shipped in core. External plugin packages can register more. |
 | `embedding.model` | `embeddinggemma` | Model name as pulled into Ollama. |
 | `embedding.endpoint` | `http://localhost:11434` | Ollama HTTP endpoint. |
 | `embedding.batch_size` | `32` | Texts per HTTP round-trip. |
@@ -112,11 +114,36 @@ it's free, local, and works offline. Pick a model:
 To change: edit `[embedding]` in `.codeindex/config.toml`, `ollama pull <model>`,
 re-run `code-intel index`.
 
+## Extending with external providers
+
+code-intel core ships exactly one embedding provider: `OllamaProvider`. This
+is deliberate — the project is local-first and we don't want to bundle clients
+for paid APIs in the core package.
+
+If you want Voyage, OpenAI, Cohere, or any other embedder, implement the
+public `EmbeddingProvider` Protocol in your own package and register it before
+calling `get_provider`:
+
+```python
+from code_intel.embedder import EmbeddingProvider, _REGISTRY
+
+class MyProvider:
+    name = "myprovider"
+    dim = 1024
+
+    def __init__(self, cfg): ...
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+_REGISTRY["myprovider"] = MyProvider
+```
+
+A future minor release may formalise this as a `code_intel.providers` entry
+point group; until then the registry dict is the extension surface.
+
 ## Roadmap
 
 - **v0.2** — Zoekt-backed lexical search (Docker), LSP integration via
-  `basedpyright` / `rust-analyzer` (`go_to_definition`, `find_references`),
-  Voyage and OpenAI embedding providers wired.
+  `basedpyright` / `rust-analyzer` (`go_to_definition`, `find_references`).
 - **v0.3** — Automatic `digest.md` generation per top-level module via the
   Claude API; Tree-sitter coverage for C/C++/Swift/PHP.
 

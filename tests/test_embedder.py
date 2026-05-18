@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
 from code_intel.config import default_config
@@ -28,12 +29,34 @@ def test_get_provider_default() -> None:
     assert p.dim == 768
 
 
+def test_get_provider_voyage_raises_extension_boundary() -> None:
+    """voyage is not shipped in core — must raise a helpful ValueError pointing
+    to the plugin extension path. Bypasses pydantic Literal validation to
+    exercise the runtime registry guard directly."""
+    cfg = default_config(project_name="t")
+    # object.__setattr__ bypasses pydantic's frozen/validated assignment so we
+    # can construct an "out of band" provider name and verify the registry
+    # guard is the one that raises (not pydantic itself).
+    object.__setattr__(cfg.embedding, "provider", "voyage")
+    with pytest.raises(ValueError) as excinfo:
+        get_provider(cfg)
+    msg = str(excinfo.value)
+    assert "voyage" in msg.lower()
+    assert "plugin" in msg.lower()
+
+
+def test_get_provider_openai_raises_extension_boundary() -> None:
+    """Same guard for openai."""
+    cfg = default_config(project_name="t")
+    object.__setattr__(cfg.embedding, "provider", "openai")
+    with pytest.raises(ValueError) as excinfo:
+        get_provider(cfg)
+    assert "openai" in str(excinfo.value).lower()
+
+
 def test_get_provider_unknown() -> None:
     cfg = default_config(project_name="t")
-    cfg.embedding.provider = "nope"
-    try:
+    object.__setattr__(cfg.embedding, "provider", "nope")
+    with pytest.raises(ValueError) as excinfo:
         get_provider(cfg)
-    except ValueError as e:
-        assert "Unknown" in str(e)
-    else:  # pragma: no cover
-        raise AssertionError("expected ValueError")
+    assert "nope" in str(excinfo.value).lower()

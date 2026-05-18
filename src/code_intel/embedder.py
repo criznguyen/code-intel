@@ -1,4 +1,10 @@
-"""Embedding provider plugin system. Default: Ollama. Stubs: Voyage, OpenAI."""
+"""Embedding provider plugin system.
+
+code-intel core is local-first: the only provider shipped in this package is
+:class:`OllamaProvider`. The :class:`EmbeddingProvider` Protocol is public so
+external plugin packages can implement and register their own providers
+(Voyage, OpenAI, Cohere, etc.) without forking this repo.
+"""
 
 from __future__ import annotations
 
@@ -49,43 +55,16 @@ class OllamaProvider:
         return out
 
 
-class VoyageProvider:
-    name = "voyage"
-
-    def __init__(self, cfg: EmbeddingSection):
-        self.dim = cfg.dim
-        self.model = cfg.model
-
-    def embed(self, texts: list[str]) -> list[list[float]]:  # pragma: no cover
-        raise NotImplementedError(
-            "VoyageProvider is stubbed for v0.1. "
-            "Use provider='ollama' or wire your VOYAGE_API_KEY in a future version."
-        )
-
-
-class OpenAIProvider:
-    name = "openai"
-
-    def __init__(self, cfg: EmbeddingSection):
-        self.dim = cfg.dim
-        self.model = cfg.model
-
-    def embed(self, texts: list[str]) -> list[list[float]]:  # pragma: no cover
-        raise NotImplementedError(
-            "OpenAIProvider is stubbed for v0.1. "
-            "Use provider='ollama' or wire your OPENAI_API_KEY in a future version."
-        )
-
-
 _REGISTRY: dict[str, type] = {
     "ollama": OllamaProvider,
-    "voyage": VoyageProvider,
-    "openai": OpenAIProvider,
 }
 
 
 def get_provider(cfg: Config) -> EmbeddingProvider:
     name = cfg.embedding.provider.lower()
     if name not in _REGISTRY:
-        raise ValueError(f"Unknown embedding provider '{name}'. Available: {sorted(_REGISTRY)}")
+        raise ValueError(
+            f"Unsupported embedding provider: {name!r}. "
+            "Only 'ollama' is shipped in core; add a plugin package to extend."
+        )
     return _REGISTRY[name](cfg.embedding)
