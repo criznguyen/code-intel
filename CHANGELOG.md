@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.2.0] - 2026-05-18
+
+Bundle of 5 v0.2.0 gap-audit items, shipped via 3 parallel worktrees.
+
+### Added
+
+- **doctor** (Gap 8): `--strict` flag promotes `WARN` checks (e.g. missing
+  Ollama model) to non-zero exit. CI scripts can now use
+  `code-intel doctor --strict || exit 1` to fail-fast on environment
+  drift. Default behaviour (bare `doctor`) unchanged for backward compat.
+  (`doctor.py:has_warnings()` helper, `cli.py` doctor command.)
+- **indexer** (Gap 3): submodule paths auto-excluded by parsing
+  `.gitmodules`. Vendored multi-MB submodules no longer pollute the index
+  silently. Malformed `.gitmodules` logs a warning and falls back to
+  no-exclude. (`_parse_gitmodules`, applied to both `_walk_repo` and
+  `discover_files(since=…)`.)
+
+### Fixed
+
+- **indexer** (Gap 5 MED ship-blocker): `index_repo` now calls
+  `_check_lancedb_writable(cfg)` BEFORE any embedding work. v0.1.7 would
+  embed 2000+ chunks (≈30s wasted Ollama wall) on a readonly target before
+  failing the final `tbl.add()`. Error messages now sanitize Rust crate
+  paths (`/root/.cargo/registry/.../lance-io-4.0.0/src/object_store.rs`)
+  to `"lance write failed (permission/space)"`. (`store._sanitize_lance_error`.)
+- **indexer** (Gap 1): batch-level commit checkpoint. v0.1.7 embedded all
+  chunks before any upsert; SIGINT mid-flight lost all embed work. v0.2.0
+  upserts after every checkpoint batch (`max(provider.batch_size, 32)`),
+  so partial progress survives. Resume via `--full` still produces a
+  complete corpus.
+- **watcher** (Gap 6): SIGINT no longer prints a Python traceback;
+  `KeyboardInterrupt` caught in both `run()` and `main()`, logs
+  `"watcher stopped (SIGINT)"` and exits 0.
+
+### Operations
+
+- **systemd templates**: `code-intel-watcher@.service` and
+  `code-intel-mcp@.service` now set `Environment="MALLOC_ARENA_MAX=2"`.
+  These units bypass the `cli.py` self-reexec from v0.1.7, so the env var
+  must be pre-set explicitly. The Zoekt template is intentionally unchanged
+  (it's a stub that just `echo`s and exits).
+
+### Audit closures
+
+Closes 5 of 9 v0.2.0 gap-audit items. Remaining 4: Gap 2 (NFS doc note),
+Gap 4 (Unicode — already works, no action), Gap 7 (no leak observed),
+Gap 9 (multi-target — already works).
+
+### Tests
+
+- 99 passed (was 83 at v0.1.7). +16 new: indexer-hardening (10),
+  doctor-strict (3), watcher-cosmetics (3).
+
 ## [0.1.7] - 2026-05-18
 
 Bundle of 1 P1 perf fix + 2 MED audit closes from the v0.1.6 backlog.
