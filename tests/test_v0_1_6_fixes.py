@@ -213,8 +213,9 @@ def test_cli_index_auto_elevates_to_info(tmp_path: Path, monkeypatch) -> None:
     def _fake_prune(cfg):
         return 0
 
-    with patch("code_intel.indexer.index_repo", _fake_index_repo), patch(
-        "code_intel.indexer.prune_orphans", _fake_prune
+    with (
+        patch("code_intel.indexer.index_repo", _fake_index_repo),
+        patch("code_intel.indexer.prune_orphans", _fake_prune),
     ):
         res = runner.invoke(app, ["index", "--target", str(tmp_path)])
     assert res.exit_code == 0, res.output

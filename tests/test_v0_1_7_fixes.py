@@ -55,7 +55,9 @@ def test_arena_bootstrap_skipped_when_argv0_empty(monkeypatch: pytest.MonkeyPatc
     assert cli_module._should_arena_bootstrap() is False
 
 
-def test_arena_bootstrap_skipped_when_sentinel_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_arena_bootstrap_skipped_when_sentinel_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """After re-exec the sentinel env var is set; second-pass MUST short-circuit."""
     fake_script = tmp_path / "code-intel"
     fake_script.write_text("#!stub\n")
@@ -65,7 +67,9 @@ def test_arena_bootstrap_skipped_when_sentinel_set(monkeypatch: pytest.MonkeyPat
     assert cli_module._should_arena_bootstrap() is False
 
 
-def test_arena_bootstrap_skipped_when_opt_out_env_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_arena_bootstrap_skipped_when_opt_out_env_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """``CODE_INTEL_DISABLE_ARENA_CAP=1`` is the operator escape hatch."""
     fake_script = tmp_path / "code-intel"
     fake_script.write_text("#!stub\n")
@@ -150,8 +154,7 @@ def test_file_over_max_bytes_logs_warning_and_returns_empty(
     out = chunk_file(big, tmp_path, max_bytes=100_000)
     assert out == []
     assert any(
-        "chunker skip" in r.message and "max_file_bytes" in r.message
-        for r in caplog.records
+        "chunker skip" in r.message and "max_file_bytes" in r.message for r in caplog.records
     ), f"expected chunker-skip warning, got: {[r.message for r in caplog.records]}"
 
 
@@ -224,10 +227,7 @@ def test_zoekt_config_with_enabled_true_in_toml_rejected(tmp_path: Path) -> None
     ``zoekt.enabled = true`` must fail with the v0.2 message."""
     cfg_dir = tmp_path / ".codeindex"
     cfg_dir.mkdir()
-    (cfg_dir / "config.toml").write_text(
-        "[zoekt]\n"
-        "enabled = true\n"
-    )
+    (cfg_dir / "config.toml").write_text("[zoekt]\nenabled = true\n")
     with pytest.raises(ValueError) as excinfo:
         load_config(tmp_path)
     assert "v0.2" in str(excinfo.value)

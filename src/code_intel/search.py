@@ -55,10 +55,29 @@ def _reset_provider_cache() -> None:
 # Tokens stripped from query/symbol tokenization before computing lexical
 # overlap. Keep this list minimal — false-positive boosts hurt less than
 # missing a relevant match.
-_RERANK_STOPWORDS = frozenset({
-    "the", "a", "an", "of", "for", "to", "in", "on", "and", "or", "is", "are",
-    "with", "by", "at", "as", "be", "this", "that",
-})
+_RERANK_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "and",
+        "or",
+        "is",
+        "are",
+        "with",
+        "by",
+        "at",
+        "as",
+        "be",
+        "this",
+        "that",
+    }
+)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -85,16 +104,16 @@ def _query_tokens(query: str) -> set[str]:
 # Rerank weight constants (multiplicative on LanceDB L2 distance; lower=better).
 # Tuned on solanabot v0.1.4 corpus: `calculate token2022 transfer fee` lifts
 # `calculate_fee` from #17 to top-5 without disturbing top docs for general queries.
-_KIND_BOOST_FUNCTION = 0.85       # functions are usually the user's target
-_TEST_NAME_PENALTY = 1.15          # de-prioritize `test_…` symbols
-_LEX_OVERLAP_STRONG = 0.88         # ≥2 query tokens appear in symbol
-_LEX_OVERLAP_WEAK = 0.94           # ≥1 query token appears in symbol
+_KIND_BOOST_FUNCTION = 0.85  # functions are usually the user's target
+_TEST_NAME_PENALTY = 1.15  # de-prioritize `test_…` symbols
+_LEX_OVERLAP_STRONG = 0.88  # ≥2 query tokens appear in symbol
+_LEX_OVERLAP_WEAK = 0.94  # ≥1 query token appears in symbol
 # Symbol-coverage bonus: when the matched tokens cover most of the symbol
 # (i.e. the symbol *is* mostly the query, like `calculate_fee` ↔ "calculate fee"),
 # the match is much higher-signal than the same overlap on a long symbol.
-_COVERAGE_FULL = 0.85              # ≥90% of symbol tokens are in query
-_COVERAGE_HALF = 0.92              # ≥50% of symbol tokens are in query
-_RERANK_OVERFETCH = 3              # fetch k*N candidates then trim
+_COVERAGE_FULL = 0.85  # ≥90% of symbol tokens are in query
+_COVERAGE_HALF = 0.92  # ≥50% of symbol tokens are in query
+_RERANK_OVERFETCH = 3  # fetch k*N candidates then trim
 
 
 def _rerank(rows: list[dict[str, Any]], q_tokens: set[str]) -> list[dict[str, Any]]:

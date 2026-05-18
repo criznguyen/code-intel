@@ -200,6 +200,7 @@ def index(
     # still upgrades further; explicit CODE_INTEL_LOG=WARNING wins.
     import logging as _logging
     import os as _os
+
     if not _os.environ.get("CODE_INTEL_LOG"):
         root_lvl = _logging.getLogger().getEffectiveLevel()
         if root_lvl > _logging.INFO:

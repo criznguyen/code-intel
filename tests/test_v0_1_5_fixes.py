@@ -214,9 +214,7 @@ def test_index_repo_since_skips_unchanged_chunks(tmp_path) -> None:
     # Seed a python file with two functions.
     src = tmp_path / "src"
     src.mkdir()
-    (src / "mod.py").write_text(
-        "def alpha():\n    return 1\n\n\ndef beta():\n    return 2\n"
-    )
+    (src / "mod.py").write_text("def alpha():\n    return 1\n\n\ndef beta():\n    return 2\n")
 
     # First pass: full index. Mock the embed provider to return fixed vectors.
     seen_batches: list[int] = []
@@ -373,13 +371,9 @@ def test_rerank_promotes_function_with_lex_overlap() -> None:
     out = _rerank(rows, q_tokens)
     symbols_in_order = [r["symbol"] for r in out]
     # calculate_fee should rank above test_calculate_fee (test penalty).
-    assert symbols_in_order.index("calculate_fee") < symbols_in_order.index(
-        "test_calculate_fee"
-    )
+    assert symbols_in_order.index("calculate_fee") < symbols_in_order.index("test_calculate_fee")
     # And above the no-overlap class chunk (function boost + lex overlap wins).
-    assert symbols_in_order.index("calculate_fee") < symbols_in_order.index(
-        "GenericConfig"
-    )
+    assert symbols_in_order.index("calculate_fee") < symbols_in_order.index("GenericConfig")
 
 
 def test_rerank_symbol_coverage_beats_partial_long_match() -> None:

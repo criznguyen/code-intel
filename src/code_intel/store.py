@@ -173,9 +173,7 @@ def upsert_chunks(cfg: Config, chunks: list[Chunk], vectors: list[list[float]]) 
         # operators see "permission/space" not a Rust internal backtrace
         # fragment. Wrap as RuntimeError so callers don't have to know about
         # the (Lance-internal) error class.
-        raise RuntimeError(
-            f"failed to upsert chunks: {_sanitize_lance_error(str(e))}"
-        ) from e
+        raise RuntimeError(f"failed to upsert chunks: {_sanitize_lance_error(str(e))}") from e
     return len(rows)
 
 

@@ -116,9 +116,7 @@ pub mod helpers {
 """
     chunks = chunk_text("lib.rs", "rust", src)
     symbols = {c.symbol for c in chunks}
-    assert "helpers" in symbols or "h" in symbols, (
-        f"inline mod body should survive; got {symbols}"
-    )
+    assert "helpers" in symbols or "h" in symbols, f"inline mod body should survive; got {symbols}"
 
 
 def test_rust_mod_decl_regex() -> None:
@@ -361,9 +359,7 @@ def test_embed_batch_uses_input_array() -> None:
     provider = OllamaProvider(cfg.embedding)
 
     route = respx.post("http://localhost:11434/api/embed").mock(
-        return_value=httpx.Response(
-            200, json={"embeddings": [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]]}
-        )
+        return_value=httpx.Response(200, json={"embeddings": [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]]})
     )
     result = provider.embed(["a", "b", "c"])
     assert route.call_count == 1, f"expected 1 batched POST, got {route.call_count}"

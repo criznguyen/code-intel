@@ -269,9 +269,7 @@ def index_repo(
                 chunker_skipped_files += 1
         except OSError:
             pass
-        chunks = chunk_file(
-            fp, cfg.target, max_file_bytes, max_chunk_chars=max_chunk_chars
-        )
+        chunks = chunk_file(fp, cfg.target, max_file_bytes, max_chunk_chars=max_chunk_chars)
         if chunks:
             all_chunks.extend(chunks)
     log.info("produced %d chunks", len(all_chunks))
@@ -408,9 +406,7 @@ def index_repo(
                 try:
                     tbl.delete(f"id IN ({id_list})")
                 except Exception as e:  # pragma: no cover
-                    log.debug(
-                        "selective delete before incremental add failed: %s", e
-                    )
+                    log.debug("selective delete before incremental add failed: %s", e)
             try:
                 tbl.add(rows)
             except OSError as e:

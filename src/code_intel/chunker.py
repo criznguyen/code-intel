@@ -309,10 +309,7 @@ def _chunk_markdown(rel_path: str, text: str, max_chunk_chars: int) -> list[Chun
         # a heading. The very first chunk of a file (synthetic title before
         # the first explicit heading) is exempt — keep it as a file-anchor.
         non_blank = [ln for ln in body if ln.strip()]
-        is_heading_only = (
-            len(non_blank) == 1
-            and non_blank[0].lstrip().startswith(("# ", "## "))
-        )
+        is_heading_only = len(non_blank) == 1 and non_blank[0].lstrip().startswith(("# ", "## "))
         if is_heading_only:
             continue
         if len(content) > max_chunk_chars:
@@ -426,11 +423,7 @@ def _chunk_with_treesitter(
         # produce 1-line chunks that flood top-K with junk and never contain
         # semantically useful content. Inline `mod foo { ... }` bodies are
         # kept (they have braces). (MED-3 in v0.1.3 audit.)
-        if (
-            lang == "rust"
-            and node.type == "mod_item"
-            and _RUST_MOD_DECL_RE.match(content.strip())
-        ):
+        if lang == "rust" and node.type == "mod_item" and _RUST_MOD_DECL_RE.match(content.strip()):
             continue
         if len(content) > max_chunk_chars:
             # Split oversized code unit at line boundaries rather than dropping.

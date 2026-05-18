@@ -109,9 +109,7 @@ def test_sanitize_lance_error_passes_clean_messages_through() -> None:
     assert _sanitize_lance_error(clean) == clean
 
 
-def test_upsert_chunks_sanitizes_rust_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_upsert_chunks_sanitizes_rust_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``upsert_chunks`` wraps lance OSError → RuntimeError with sanitized msg."""
     _reset_db_cache()
     repo = _bootstrap_repo(tmp_path, {"a.py": "def f(): return 1\n"})
@@ -228,9 +226,7 @@ def test_index_repo_commits_partial_on_provider_crash(
     from code_intel.store import table_stats
 
     stats = table_stats(cfg)
-    assert stats["rows"] > 0, (
-        "no rows committed before the crash — checkpoint mechanism is broken"
-    )
+    assert stats["rows"] > 0, "no rows committed before the crash — checkpoint mechanism is broken"
 
 
 def test_index_repo_resume_full_produces_complete_corpus(
