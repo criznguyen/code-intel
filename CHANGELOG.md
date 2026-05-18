@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.1.6] - 2026-05-18
+
+Bundle of 2 new findings + 4 chore items surfaced after the v0.1.5 ship.
+
+### Fixed
+
+- **cli/index** (NEW-1): `code-intel index` now auto-elevates the root
+  logger to `INFO` when no explicit `CODE_INTEL_LOG` is set, so foreground
+  `--full` reindex runs (10–30 min on large repos) no longer look frozen.
+  Previously `setup_logging()` defaulted to `WARNING`, which suppressed
+  the `discovered N files / produced M chunks / embedded …` lines. Explicit
+  `CODE_INTEL_LOG=WARNING` still wins.
+- **embedder** (NEW-1 sibling): `OllamaProvider.embed` emits a per-batch
+  `INFO` line (`ollama embed batch X/Y (n/total items)`) whenever a call
+  spans more than one batch, so progress is visible without `-v`. Single
+  batch calls (e.g. query embed at search time) stay silent.
+- **store** (BL-1): `store._list_table_names(db)` normalizes the LanceDB
+  table listing response across SDK versions. Replaces deprecated
+  `db.table_names()`. In lancedb ≥ 0.20 `list_tables()` returns a
+  `ListTablesResponse` pydantic-ish object whose membership test silently
+  yields `False` for raw `name in resp` — we unwrap `.tables` to a plain
+  `list[str]`. Removes 338 `DeprecationWarning` lines from `pytest` output.
+- **indexer / watcher / mcp_server** (BL-2): migrated from
+  `pathspec.PathSpec.from_lines("gitwildmatch", …)` to
+  `pathspec.GitIgnoreSpec.from_lines(…)`. The old factory is deprecated in
+  pathspec ≥ 0.12. Behavior is identical for our glob patterns (no negation,
+  no anchor-tail tricks) — only the implementation class changed. Removes
+  130 `GitWildMatchPattern` deprecation warnings from `pytest`.
+
+### Added
+
+- **cli/search** (BL-4): hidden `code-intel search` debug command now
+  accepts `--rerank/--no-rerank` (default on). Passes through to
+  `semantic_search(rerank=bool)` so ad-hoc benches can compare raw L2
+  nearest-neighbor ordering against the v0.1.5 heuristic reranker without
+  editing config. `quick_cli_search` grew a matching `rerank` kwarg.
+- 8 new regression tests in `tests/test_v0_1_6_fixes.py`.
+
+### Notes
+
+- **NEW-2 RSS scale verification**: ran `scripts/bench_memory.py
+  --target solanabot --n 50` against the v0.1.5 installed binary. Plateau
+  **589.8 MB** (delta +406 MB over 50 queries, p50 170.7 ms). Reference
+  v0.1.3 was 650 MB — so the LOW-9 connection cache + v0.1.5 provider
+  cache trim ~9% off baseline, well short of the ≤400 MB target. Embedder
+  HTTP allocations + LanceDB Arrow row-build per query appear to dominate
+  now. Deferred as **NEW finding for v0.1.7** with this diagnostic data;
+  fix candidates: (a) reuse a single Arrow record-builder, (b) profile
+  `httpx.Client` request/response buffer churn, (c) cap result hydrate
+  size before `.to_list()`.
+- **BL-3 legacy v0.1.4 corpora cleanup**: instead of a 20-min `--full`
+  reindex of solanabot, the 25 heading-only `section` rows surviving from
+  the v0.1.4 chunker (across 13 markdown files in `docs/sdlc/*` and
+  `docs/audit/*`) were deleted in-place by SQL `id IN (...)` against the
+  LanceDB table. Watcher stopped → deletes applied → watcher restarted;
+  total downtime ≈ 30 s. v0.1.5 chunker fix prevents these chunks from
+  being re-emitted on the next file change, so the corpus is now clean.
+  Total rows: 4 643 → 4 618.
+
 ## [0.1.5] - 2026-05-18
 
 Closes the 4 residual items from the v0.1.4 audit on solanabot.

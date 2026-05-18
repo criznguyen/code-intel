@@ -19,7 +19,8 @@ DEBOUNCE_SECONDS = 2.0
 
 
 def _spec(globs: list[str]) -> pathspec.PathSpec:
-    return pathspec.PathSpec.from_lines("gitwildmatch", globs)
+    # v0.1.6: GitIgnoreSpec replaces deprecated gitwildmatch factory.
+    return pathspec.GitIgnoreSpec.from_lines(globs)
 
 
 async def watch(target: Path) -> None:

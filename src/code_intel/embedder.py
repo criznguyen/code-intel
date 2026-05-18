@@ -111,11 +111,29 @@ class OllamaProvider:
     def embed(self, texts: list[str]) -> EmbedResult:
         result = EmbedResult()
         batch_size = max(1, self.batch_size)
+        total = len(texts)
+        # v0.1.6 NEW-1: progress log every batch so a foreground `--full`
+        # reindex on a large repo (20+ min) isn't visually frozen. Logged at
+        # INFO so the CLI auto-INFO elevation surfaces it without `-v`.
+        # We log on entry-to-batch (with done-so-far counter) rather than
+        # on exit so the user sees activity even when an individual batch
+        # is the slow one.
+        n_batches = (total + batch_size - 1) // batch_size
         # We chunk inputs into batches and try the batch endpoint first. On
         # batch-level failure we fall back to per-item _embed_one so a single
         # bad chunk in a batch doesn't take down the surrounding survivors.
         for batch_start in range(0, len(texts), batch_size):
             batch = texts[batch_start : batch_start + batch_size]
+            batch_idx = batch_start // batch_size + 1
+            if total > batch_size:
+                # Skip log on single-batch calls (query embed at search time).
+                log.info(
+                    "ollama embed batch %d/%d (%d/%d items)",
+                    batch_idx,
+                    n_batches,
+                    batch_start,
+                    total,
+                )
             try:
                 vecs = self._embed_batch(batch)
                 for i, v in enumerate(vecs):

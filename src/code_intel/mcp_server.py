@@ -55,7 +55,7 @@ def build_server(target: Path):
     @server.tool(description="List top-level modules (directories) under the repo root.")
     def list_modules() -> list[str]:
         root = cfg.target
-        exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", cfg.index.exclude_globs)
+        exclude_spec = pathspec.GitIgnoreSpec.from_lines(cfg.index.exclude_globs)
         mods: list[str] = []
         for entry in sorted(root.iterdir()):
             if not entry.is_dir():

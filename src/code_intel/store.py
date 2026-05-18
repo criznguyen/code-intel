@@ -86,9 +86,29 @@ def _reset_db_cache() -> None:
         _DB_CACHE.clear()
 
 
+def _list_table_names(db) -> list[str]:
+    """Return table names as a plain ``list[str]`` regardless of LanceDB version.
+
+    v0.1.6: ``table_names()`` was deprecated. The replacement ``list_tables()``
+    in lancedb >= 0.20 returns a ``ListTablesResponse`` pydantic-ish object
+    whose membership test (``name in resp``) silently returns False — it
+    yields ``(field, value)`` tuples, not table names. Normalize here so
+    callers can keep doing ``if name in _list_table_names(db)``.
+    """
+    resp = db.list_tables()
+    # Newer ListTablesResponse has ``.tables`` list.
+    if hasattr(resp, "tables"):
+        return list(resp.tables)
+    # Older versions (< 0.20) returned a plain list directly.
+    if isinstance(resp, list):
+        return resp
+    # Last-resort: treat as iterable of strings.
+    return [t for t in resp if isinstance(t, str)]
+
+
 def _open_or_create_table(db, cfg: Config, sample_rows: list[dict[str, Any]] | None = None):
     name = cfg.lancedb.table
-    if name in db.table_names():
+    if name in _list_table_names(db):
         return db.open_table(name)
     if sample_rows:
         return db.create_table(name, data=sample_rows)
@@ -134,7 +154,7 @@ def upsert_chunks(cfg: Config, chunks: list[Chunk], vectors: list[list[float]]) 
 def delete_for_path(cfg: Config, path: str) -> int:
     db = open_db(cfg)
     name = cfg.lancedb.table
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return 0
     tbl = db.open_table(name)
     try:
@@ -154,7 +174,7 @@ def search(
 ) -> list[dict[str, Any]]:
     db = open_db(cfg)
     name = cfg.lancedb.table
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return []
     tbl = db.open_table(name)
     q = tbl.search(vector).limit(k)
@@ -184,7 +204,7 @@ def lookup_existing_hashes(cfg: Config, paths: set[str]) -> dict[tuple[str, str,
         return {}
     db = open_db(cfg)
     name = cfg.lancedb.table
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return {}
     tbl = db.open_table(name)
     path_list = ",".join(_sql_quote(p) for p in paths)
@@ -213,7 +233,7 @@ def lookup_existing_hashes(cfg: Config, paths: set[str]) -> dict[tuple[str, str,
 def list_indexed_paths(cfg: Config) -> set[str]:
     db = open_db(cfg)
     name = cfg.lancedb.table
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return set()
     tbl = db.open_table(name)
     rows = tbl.search().select(["path"]).limit(1_000_000).to_list()
@@ -223,7 +243,7 @@ def list_indexed_paths(cfg: Config) -> set[str]:
 def table_stats(cfg: Config) -> dict[str, Any]:
     db = open_db(cfg)
     name = cfg.lancedb.table
-    if name not in db.table_names():
+    if name not in _list_table_names(db):
         return {"rows": 0, "table": name}
     tbl = db.open_table(name)
     return {"rows": tbl.count_rows(), "table": name}

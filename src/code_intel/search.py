@@ -285,15 +285,22 @@ def structural_search(
     return hits
 
 
-def quick_cli_search(cfg: Config, query: str, k: int = 5) -> str:
-    """Render a quick human-readable semantic search summary for CLI debugging."""
+def quick_cli_search(cfg: Config, query: str, k: int = 5, rerank: bool = True) -> str:
+    """Render a quick human-readable semantic search summary for CLI debugging.
+
+    v0.1.6: accept ``rerank`` so ad-hoc benches can compare raw L2 ordering
+    against the v0.1.5 heuristic reranker.
+    """
     try:
-        results = semantic_search(cfg, query, k=k)
+        results = semantic_search(cfg, query, k=k, rerank=rerank)
     except Exception as e:
         return f"semantic search failed: {e}"
     if not results:
         return "(no results)"
-    parts = [f"{shlex.quote(query)} -> {len(results)} hits"]
+    header = f"{shlex.quote(query)} -> {len(results)} hits"
+    if not rerank:
+        header += " (rerank=off)"
+    parts = [header]
     for r in results:
         parts.append(
             f"  {r['path']}:{r['start_line']}-{r['end_line']}  {r['symbol']} ({r['kind']})"

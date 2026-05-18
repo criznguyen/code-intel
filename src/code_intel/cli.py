@@ -126,6 +126,19 @@ def index(
         err_console.print("[red]--full and --since are mutually exclusive[/]")
         raise typer.Exit(code=2)
 
+    # v0.1.6 NEW-1: `index` is the only long-running CLI command. Default
+    # WARNING level made foreground runs look frozen for 10-30 min (no
+    # per-batch progress). Auto-elevate to INFO so users get periodic
+    # "discovered N files / produced M chunks / embedded B/T batch" lines
+    # without needing to remember `-v`. `--verbose` (and CODE_INTEL_LOG=DEBUG)
+    # still upgrades further; explicit CODE_INTEL_LOG=WARNING wins.
+    import logging as _logging
+    import os as _os
+    if not _os.environ.get("CODE_INTEL_LOG"):
+        root_lvl = _logging.getLogger().getEffectiveLevel()
+        if root_lvl > _logging.INFO:
+            setup_logging("INFO")
+
     try:
         from code_intel.indexer import index_repo, prune_orphans
 
@@ -254,13 +267,20 @@ def search(
     query: str = typer.Argument(...),
     target: Path = typer.Option(None, "--target"),
     k: int = typer.Option(5, "--k"),
+    rerank: bool = typer.Option(
+        True,
+        "--rerank/--no-rerank",
+        help="Apply heuristic reranker over LanceDB candidates (v0.1.5+). "
+        "Use --no-rerank to inspect raw L2 nearest-neighbor order, e.g. for "
+        "embedding-model A/B benchmarks.",
+    ),
 ) -> None:
     """Quick semantic-search probe for debugging."""
     target_path = _resolve_target(target)
     cfg = load_config(target_path)
     from code_intel.search import quick_cli_search
 
-    console.print(quick_cli_search(cfg, query, k=k))
+    console.print(quick_cli_search(cfg, query, k=k, rerank=rerank))
 
 
 def main() -> None:  # pragma: no cover

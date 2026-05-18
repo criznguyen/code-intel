@@ -19,8 +19,14 @@ log = get_logger(__name__)
 
 
 def _spec(globs: list[str]) -> pathspec.PathSpec:
-    """Build a gitwildmatch-style PathSpec from globs (supports `**/`)."""
-    return pathspec.PathSpec.from_lines("gitwildmatch", globs)
+    """Build a gitignore-style PathSpec from globs (supports `**/`).
+
+    v0.1.6: migrated from deprecated ``gitwildmatch`` factory to
+    :class:`pathspec.GitIgnoreSpec`. Behavior is identical for our glob
+    patterns (no negation, no anchor-tail tricks) — only the implementation
+    class changed.
+    """
+    return pathspec.GitIgnoreSpec.from_lines(globs)
 
 
 def _matches_any(rel_path: str, spec: pathspec.PathSpec) -> bool:
